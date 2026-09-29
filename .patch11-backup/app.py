@@ -291,9 +291,7 @@ ctrl = {"buzzer": "auto", "led": "auto", "muted": False,
         "gas_ack": False,     # alarm was reset while gas was high: wait until the level has dropped once
         "vib_ack": 0.0,       # vibration up to this moment is ignored (Reset alarm, timeout, or while disarmed)
         "vib_start": 0.0,     # when the running vibration alarm started (0 = no vibration alarm)
-        "reset_gen": 0,       # +1 on every "Reset alarm": lets the sensor loop see a reset that happened mid-pass
-        "vib_wait": False,    # after Reset / 1-min timeout: vibration is ignored until the sensor has been quiet for a while
-        "gas_ok_since": None} # since when the gas has been well below the threshold (used to re-arm after Reset)
+        "reset_gen": 0}       # +1 on every "Reset alarm": lets the sensor loop see a reset that happened mid-pass
 series = deque(maxlen=config.GRAPH_POINTS)
 state = {
     "gas": None, "gas_voltage": None, "vibration": False, "status": "warmup",
@@ -395,16 +393,8 @@ def sensor_loop():
                 gas_hit = armed and gas is not None and warm == 0 and gas > thr
                 if not armed:
                     ctrl["gas_latch"] = ctrl["gas_ack"] = False
-                if gas is not None:
-                    # re-arm after Reset only when the gas is clearly below the threshold and STAYS there
-                    # (a noisy sensor hovering around the threshold must not bring the pop-up back)
-                    if gas <= thr * getattr(config, "GAS_REARM_RATIO", 0.9):
-                        if ctrl["gas_ok_since"] is None:
-                            ctrl["gas_ok_since"] = now
-                        if now - ctrl["gas_ok_since"] >= getattr(config, "GAS_REARM_SECONDS", 5):
-                            ctrl["gas_ack"] = False     # level is normal again: the next rise alarms again
-                    else:
-                        ctrl["gas_ok_since"] = None
+                if gas is not None and gas <= thr:
+                    ctrl["gas_ack"] = False         # level is normal again: the next rise alarms again
                 if gas_hit and not ctrl["gas_ack"]:
                     ctrl["gas_latch"] = True        # latched: stays on until "Reset alarm" is pressed
                 gas_alarm = bool(armed and ctrl["gas_latch"])
@@ -413,20 +403,13 @@ def sensor_loop():
                 # VIB_ALARM_HOLD seconds after it STARTED (more vibration does not extend it).
                 # Disarmed: measured, never alarms, and old vibration is thrown away.
                 hold = config.VIB_ALARM_HOLD
-                settle = getattr(config, "VIB_SETTLE_SECONDS", 2.0)
                 if not armed:
                     ctrl["vib_start"] = 0.0
                     ctrl["vib_ack"] = now
-                    ctrl["vib_wait"] = True
                 if ctrl["vib_start"] and now - ctrl["vib_start"] >= hold:
                     ctrl["vib_start"] = 0.0         # 1 minute is up
-                    ctrl["vib_ack"] = now
-                    ctrl["vib_wait"] = True         # a sensor that is STILL vibrating must not restart the alarm at once
-                if ctrl["vib_wait"]:
-                    ctrl["vib_ack"] = max(ctrl["vib_ack"], last_vib)   # vibration seen while waiting is thrown away
-                    if now - last_vib >= settle:
-                        ctrl["vib_wait"] = False    # quiet long enough: only NEW vibration may alarm now
-                if armed and not ctrl["vib_wait"] and not ctrl["vib_start"] and last_vib > ctrl["vib_ack"]:
+                    ctrl["vib_ack"] = now           # only NEW vibration may start the next alarm
+                if armed and not ctrl["vib_start"] and last_vib > ctrl["vib_ack"]:
                     ctrl["vib_start"] = now
                 vib_alarm = bool(armed and ctrl["vib_start"])
                 vib_left = max(0, int(math.ceil(hold - (now - ctrl["vib_start"])))) if vib_alarm else 0
@@ -625,16 +608,11 @@ async def control(request: Request):
     elif action == "reset_alarm":
         with lock:
             ctrl["gas_latch"] = False
-            g_prev = state.get("gas")
-            # ignore gas until it has fallen clearly below the threshold (and stayed there); if it is already low, nothing to ignore
-            ctrl["gas_ack"] = g_prev is not None and g_prev > settings["threshold"] * getattr(config, "GAS_REARM_RATIO", 0.9)
-            ctrl["gas_ok_since"] = None
+            ctrl["gas_ack"] = True          # ignore gas until the level has dropped to the threshold once
             ctrl["reset_gen"] += 1
             ctrl["vib_start"] = 0.0         # vibration alarm off right now
-            # vibration up to now no longer counts, and new vibration only counts once the sensor has been quiet
-            # for VIB_SETTLE_SECONDS (the button press itself shakes the sensor; a stuck sensor must not re-alarm)
-            ctrl["vib_ack"] = time.time()
-            ctrl["vib_wait"] = True
+            # vibration up to now, plus a short grace for the shake of pressing the button, no longer counts
+            ctrl["vib_ack"] = time.time() + getattr(config, "VIB_RESET_GRACE", 3)
             ctrl["muted"] = False
             # answer right away: do not wait for the next sensor loop (up to SAMPLE_INTERVAL) to clear the state
             state.update(gas_alarm=False, vib_alarm=False, vib_left=0, reasons=[])
@@ -673,7 +651,6 @@ async def control(request: Request):
     elif action == "sim_vibration" and SIMULATION:
         with lock:
             ctrl["vib_ack"] = min(ctrl["vib_ack"], time.time() - 0.01)   # test button: skip the post-reset grace
-            ctrl["vib_wait"] = False                                      # test button: do not wait for a quiet sensor
         hw.vib_event = time.time()
     else:
         return bad("unknown action")
