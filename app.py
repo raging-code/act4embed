@@ -385,7 +385,7 @@ def sensor_loop():
             # ---- decide alarm + outputs
             with lock:
                 thr = settings["threshold"]
-                warm = warmup_left(now)
+                warm = 0 if (SIMULATION and ctrl.get("sim_skip_warmup")) else warmup_left(now)
                 armed = settings["armed"]
                 gas_hit = armed and gas is not None and warm == 0 and gas > thr
                 if not armed:
@@ -609,6 +609,8 @@ async def control(request: Request):
             "If you can read this, email alerts work."), daemon=True).start()
     elif action == "sim_gas" and SIMULATION:
         hw.sim_gas_until = time.time() + 10
+        with lock:
+            ctrl["sim_skip_warmup"] = True     # test button: do not wait for the MQ-2 warm-up
     elif action == "sim_vibration" and SIMULATION:
         hw.vib_event = time.time()
     else:
