@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gas & Vibration Monitor</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <h1>Gas & Vibration Monitor</h1>
+  <nav>
+    <a href="/" aria-current="page">Dashboard</a>
+    <a href="/history">History</a>
+  </nav>
+  <span id="statusPill" class="pill" role="status">Connecting...</span>
+</header>
+
+<main>
+  {% if sim %}<div class="banner info">Simulation mode: the numbers are fake. Use the test buttons below.</div>{% endif %}
+  <div id="conn" class="banner error" hidden>Cannot reach the Raspberry Pi. Check that app.py is running and that you are on the same network.</div>
+  <div id="alarm" class="banner danger" hidden role="alert"><span id="alarmTitle">ALARM</span><ul id="alarmList"></ul></div>
+  <div id="errors" class="banner error" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
+  <div id="warmup" class="banner info" hidden>MQ-2 is warming up. Gas alarms are off for <b id="warmLeft">0:00</b>.</div>
+
+  <section class="top">
+    <div class="panel">
+      <h2>Gas level (MQ-2)</h2>
+      <div class="big"><span id="gasVal">--</span><small>of 1023</small></div>
+      <div class="gauge" aria-hidden="true"><div id="gasFill" class="fill" style="width:0"></div><div id="gasTick" class="tick"></div></div>
+      <div class="gauge-legend"><span>0</span><span>Threshold line: <b id="tickVal">--</b></span><span>1023</span></div>
+      <p class="muted">Sensor voltage: <span id="gasVolt">--</span> V</p>
+    </div>
+    <div class="panel">
+      <h2>Vibration (SW-420)</h2>
+      <div id="vibState" class="state off">--</div>
+      <p class="muted">Stays on screen for a few seconds after a shake.</p>
+    </div>
+    <div class="panel">
+      <h2>Outputs</h2>
+      <p style="margin:0">Buzzer: <b id="bzState">--</b> <span class="muted" id="bzMode"></span></p>
+      <p style="margin:6px 0 0">LED: <b id="ledState">--</b> <span class="muted" id="ledMode"></span></p>
+      <p class="muted" id="mutedNote" hidden>Buzzer muted until the alarm ends.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Live readings (last 2 minutes)</h2>
+    <div class="chart-box"><canvas id="chart" aria-label="Live gas and vibration graph" role="img"></canvas></div>
+  </section>
+
+  <section class="controls">
+    <div class="panel">
+      <label for="thrRange">Gas alarm threshold</label>
+      <input id="thrRange" type="range" min="1" max="1023" step="1" value="400">
+      <div class="row"><input id="thrNum" type="number" min="1" max="1023" aria-label="Threshold value"><button id="thrSave">Save threshold</button></div>
+    </div>
+    <div class="panel">
+      <label>Buzzer</label>
+      <div class="seg" id="bzBtns"><button data-v="auto">Auto</button><button data-v="on">On</button><button data-v="off">Off</button></div>
+      <label style="margin-top:14px">LED</label>
+      <div class="seg" id="ledBtns"><button data-v="auto">Auto</button><button data-v="on">On</button><button data-v="off">Off</button></div>
+    </div>
+    <div class="panel">
+      <label>Alarm</label>
+      <div class="row"><button id="muteBtn" class="warn">Mute alarm</button><button id="resetBtn">Reset to auto</button></div>
+      <p class="muted">Auto: the buzzer sounds on gas over the threshold or vibration; the LED lights on vibration.</p>
+    </div>
+    <div class="panel">
+      <label>Last alert</label>
+      <div id="lastAlert" class="muted">None since the app started</div>
+      <p class="muted" id="emailStatus" style="margin:8px 0 0"></p>
+      <div class="row"><button id="testEmail">Send test email</button></div>
+    </div>
+    {% if sim %}
+    <div class="panel">
+      <label>Simulation tests</label>
+      <div class="row"><button id="simGas">Simulate gas leak (10 s)</button><button id="simVib">Simulate vibration</button></div>
+    </div>
+    {% endif %}
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='chart.umd.js') }}"></script>
+<script>
+const $ = id => document.getElementById(id);
+const MAXPTS = 240;
+const LABELS = {safe: 'Safe', warning: 'Warning', danger: 'Danger', warmup: 'Warming up', error: 'Sensor error'};
+let since = 0, busy = false;
+const times = [], gasData = [], vibData = [], thrData = [];
+
+const chart = new Chart($('chart'), {
+  type: 'line',
+  data: { labels: times, datasets: [
+    { label: 'Gas (0-1023)', data: gasData, borderColor: '#0f7f9c', backgroundColor: '#0f7f9c', borderWidth: 2, pointRadius: 0, tension: .25, yAxisID: 'y' },
+    { label: 'Threshold', data: thrData, borderColor: '#c22f2f', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, yAxisID: 'y' },
+    { label: 'Vibration', data: vibData, borderColor: 'rgba(194,47,47,.0)', backgroundColor: 'rgba(240,160,40,.35)', fill: true, stepped: true, pointRadius: 0, yAxisID: 'y1' }
+  ]},
+  options: { animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+    scales: { y: { min: 0, max: 1023, title: { display: true, text: 'Gas (ADC)' } },
+              y1: { min: 0, max: 1, position: 'right', display: false },
+              x: { ticks: { maxTicksLimit: 8, autoSkip: true } } },
+    plugins: { legend: { position: 'bottom' } } }
+});
+
+function fmt(sec) { const m = Math.floor(sec / 60), s = sec % 60; return m + ':' + String(s).padStart(2, '0'); }
+function list(ul, items) { ul.replaceChildren(...items.map(t => { const li = document.createElement('li'); li.textContent = t; return li; })); }
+
+function render(d) {
+  const pill = $('statusPill'); pill.textContent = LABELS[d.status] || d.status; pill.className = 'pill ' + d.status;
+  $('gasVal').textContent = d.gas === null ? '--' : d.gas;
+  const pct = d.gas === null ? 0 : d.gas / 1023 * 100;
+  $('gasFill').style.width = pct + '%';
+  $('gasFill').style.background = d.status === 'danger' && d.gas > d.threshold ? 'var(--danger)' : d.status === 'warning' ? 'var(--warn)' : 'var(--safe)';
+  $('gasTick').style.left = 'calc(' + d.threshold / 1023 * 100 + '% - 1px)';
+  $('tickVal').textContent = d.threshold;
+  $('gasVolt').textContent = d.gas_voltage === null ? '--' : d.gas_voltage;
+  const v = $('vibState'); v.textContent = d.vibration ? 'DETECTED' : 'Not detected'; v.className = 'state ' + (d.vibration ? 'on' : 'off');
+  $('bzState').textContent = d.buzzer_on ? 'ON' : 'OFF'; $('ledState').textContent = d.led_on ? 'ON' : 'OFF';
+  $('bzMode').textContent = '(' + d.buzzer_mode + ')'; $('ledMode').textContent = '(' + d.led_mode + ')';
+  $('mutedNote').hidden = !d.muted;
+  document.querySelectorAll('#bzBtns button').forEach(b => b.classList.toggle('active', b.dataset.v === d.buzzer_mode));
+  document.querySelectorAll('#ledBtns button').forEach(b => b.classList.toggle('active', b.dataset.v === d.led_mode));
+  $('alarm').hidden = d.reasons.length === 0; list($('alarmList'), d.reasons);
+  $('alarmTitle').textContent = 'ALARM' + (d.buzzer_on && !d.muted ? ' - buzzer sounding' : '');
+  $('errors').hidden = d.errors.length === 0; list($('errorList'), d.errors);
+  $('warmup').hidden = d.warmup_left <= 0; $('warmLeft').textContent = fmt(d.warmup_left);
+  if (document.activeElement !== $('thrRange') && document.activeElement !== $('thrNum')) { $('thrRange').value = d.threshold; $('thrNum').value = d.threshold; }
+  $('lastAlert').textContent = d.last_alert ? new Date(d.last_alert.ts * 1000).toLocaleTimeString() + ' - ' + d.last_alert.kind + ': ' + d.last_alert.message : 'None since the app started';
+  $('emailStatus').textContent = d.email_status + (d.last_email ? ' (' + new Date(d.last_email * 1000).toLocaleTimeString() + ')' : '');
+
+  for (const p of d.series) { times.push(new Date(p.t * 1000).toLocaleTimeString()); gasData.push(p.gas); vibData.push(p.vib); since = Math.max(since, p.t); }
+  while (times.length > MAXPTS) { times.shift(); gasData.shift(); vibData.shift(); }
+  thrData.length = 0; times.forEach(() => thrData.push(d.threshold));
+  chart.update('none');
+}
+
+async function poll() {
+  if (busy) return; busy = true;
+  try {
+    const r = await fetch('/data?since=' + since, { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json()); $('conn').hidden = true;
+  } catch (e) { $('conn').hidden = false; $('statusPill').textContent = 'Offline'; $('statusPill').className = 'pill error'; }
+  finally { busy = false; }
+}
+
+async function send(action, value) {
+  try {
+    const r = await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, value }) });
+    const j = await r.json(); if (!j.ok) alert(j.error || 'Command failed');
+  } catch (e) { alert('Cannot reach the Raspberry Pi.'); }
+  poll();
+}
+
+document.querySelectorAll('#bzBtns button').forEach(b => b.onclick = () => send('buzzer', b.dataset.v));
+document.querySelectorAll('#ledBtns button').forEach(b => b.onclick = () => send('led', b.dataset.v));
+$('muteBtn').onclick = () => send('mute'); $('resetBtn').onclick = () => send('reset');
+$('testEmail').onclick = () => send('test_email');
+$('thrRange').oninput = () => $('thrNum').value = $('thrRange').value;
+$('thrNum').oninput = () => $('thrRange').value = $('thrNum').value;
+$('thrRange').onchange = () => send('threshold', $('thrRange').value);
+$('thrSave').onclick = () => send('threshold', $('thrNum').value);
+if ($('simGas')) { $('simGas').onclick = () => send('sim_gas'); $('simVib').onclick = () => send('sim_vibration'); }
+
+poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>

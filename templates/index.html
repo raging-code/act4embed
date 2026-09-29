@@ -2,137 +2,135 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gas & Vibration Monitor</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body data-s="warmup">
 <header>
-  <h1>Gas & Vibration Monitor</h1>
-  <nav>
-    <a href="/" aria-current="page">Dashboard</a>
-    <a href="/history">History</a>
-  </nav>
-  <span id="statusPill" class="pill" role="status">Connecting...</span>
+  <span class="brand">Gas & Vibration Monitor</span>
+  <nav aria-label="Pages"><a href="/" aria-current="page">Live</a><a href="/history">History</a></nav>
+  {% if sim %}<span class="demo">Simulation mode</span>{% endif %}
 </header>
-
 <main>
-  {% if sim %}<div class="banner info">Simulation mode: the numbers are fake. Use the test buttons below.</div>{% endif %}
-  <div id="conn" class="banner error" hidden>Cannot reach the Raspberry Pi. Check that app.py is running and that you are on the same network.</div>
-  <div id="alarm" class="banner danger" hidden role="alert"><span id="alarmTitle">ALARM</span><ul id="alarmList"></ul></div>
-  <div id="errors" class="banner error" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
-  <div id="warmup" class="banner info" hidden>MQ-2 is warming up. Gas alarms are off for <b id="warmLeft">0:00</b>.</div>
+  {% if sim %}<div class="banner">Simulation mode: the numbers are fake. Use the test buttons below.</div>{% endif %}
+  <div id="errors" class="banner" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
 
-  <section class="top">
-    <div class="panel">
-      <h2>Gas level (MQ-2)</h2>
-      <div class="big"><span id="gasVal">--</span><small>of 1023</small></div>
-      <div class="gauge" aria-hidden="true"><div id="gasFill" class="fill" style="width:0"></div><div id="gasTick" class="tick"></div></div>
-      <div class="gauge-legend"><span>0</span><span>Threshold line: <b id="tickVal">--</b></span><span>1023</span></div>
+  <section aria-live="polite">
+    <h1 class="verdict" id="verdict">Connecting</h1>
+    <p class="sub" id="sub">Waiting for the Raspberry Pi.</p>
+  </section>
+
+  <section class="row2">
+    <div class="card">
+      <span class="lbl">Gas level (MQ-2)</span>
+      <div class="num"><span id="gasVal">--</span><small>of 1023</small></div>
+      <div class="bar" aria-hidden="true"><i id="gasFill" style="width:0"></i><b id="gasTick"></b></div>
+      <div class="bar-note"><span>0</span><span>Alarm at <b id="tickVal">--</b></span><span>1023</span></div>
       <p class="muted">Sensor voltage: <span id="gasVolt">--</span> V</p>
+      <div class="chips"><span class="chip" id="vibChip">No vibration</span><span class="chip" id="bzChip">Buzzer off</span><span class="chip" id="ledChip">LED off</span></div>
     </div>
-    <div class="panel">
-      <h2>Vibration (SW-420)</h2>
-      <div id="vibState" class="state off">--</div>
-      <p class="muted">Stays on screen for a few seconds after a shake.</p>
-    </div>
-    <div class="panel">
-      <h2>Outputs</h2>
-      <p style="margin:0">Buzzer: <b id="bzState">--</b> <span class="muted" id="bzMode"></span></p>
-      <p style="margin:6px 0 0">LED: <b id="ledState">--</b> <span class="muted" id="ledMode"></span></p>
-      <p class="muted" id="mutedNote" hidden>Buzzer muted until the alarm ends.</p>
+    <div class="card">
+      <span class="lbl">Last 2 minutes</span>
+      <svg class="trace" id="trace" viewBox="0 0 720 230" preserveAspectRatio="none" role="img" aria-label="Live gas trace"></svg>
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Live readings (last 2 minutes)</h2>
-    <div class="chart-box"><canvas id="chart" aria-label="Live gas and vibration graph" role="img"></canvas></div>
-  </section>
-
-  <section class="controls">
-    <div class="panel">
+  <section class="card dock">
+    <div>
       <label for="thrRange">Gas alarm threshold</label>
       <input id="thrRange" type="range" min="1" max="1023" step="1" value="400">
-      <div class="row"><input id="thrNum" type="number" min="1" max="1023" aria-label="Threshold value"><button id="thrSave">Save threshold</button></div>
+      <div class="row"><input id="thrNum" type="number" min="1" max="1023" aria-label="Threshold value"><button class="btn" id="thrSave">Save threshold</button></div>
     </div>
-    <div class="panel">
-      <label>Buzzer</label>
-      <div class="seg" id="bzBtns"><button data-v="auto">Auto</button><button data-v="on">On</button><button data-v="off">Off</button></div>
-      <label style="margin-top:14px">LED</label>
-      <div class="seg" id="ledBtns"><button data-v="auto">Auto</button><button data-v="on">On</button><button data-v="off">Off</button></div>
+    <div>
+      <span class="lbl">Buzzer</span>
+      <div class="seg"><button data-a="buzzer" data-v="auto">Auto</button><button data-a="buzzer" data-v="on">On</button><button data-a="buzzer" data-v="off">Off</button></div>
+      <span class="lbl" style="margin-top:16px">LED</span>
+      <div class="seg"><button data-a="led" data-v="auto">Auto</button><button data-a="led" data-v="on">On</button><button data-a="led" data-v="off">Off</button></div>
     </div>
-    <div class="panel">
-      <label>Alarm</label>
-      <div class="row"><button id="muteBtn" class="warn">Mute alarm</button><button id="resetBtn">Reset to auto</button></div>
+    <div>
+      <span class="lbl">Alarm</span>
+      <div class="row" style="margin-top:0"><button class="btn fill" id="muteBtn">Mute alarm</button><button class="btn" id="resetBtn">Reset to auto</button></div>
+      <p class="muted" id="mutedNote" hidden>Buzzer muted until the alarm ends.</p>
       <p class="muted">Auto: the buzzer sounds on gas over the threshold or vibration; the LED lights on vibration.</p>
     </div>
-    <div class="panel">
-      <label>Last alert</label>
-      <div id="lastAlert" class="muted">None since the app started</div>
-      <p class="muted" id="emailStatus" style="margin:8px 0 0"></p>
-      <div class="row"><button id="testEmail">Send test email</button></div>
-    </div>
     {% if sim %}
-    <div class="panel">
-      <label>Simulation tests</label>
-      <div class="row"><button id="simGas">Simulate gas leak (10 s)</button><button id="simVib">Simulate vibration</button></div>
+    <div>
+      <span class="lbl">Simulation tests</span>
+      <div class="row" style="margin-top:0"><button class="btn" id="simGas">Simulate gas leak (10 s)</button><button class="btn" id="simVib">Simulate vibration</button></div>
     </div>
     {% endif %}
   </section>
+
+  <section class="card">
+    <span class="lbl">Last alert</span>
+    <div id="lastAlert">None since the app started</div>
+    <p class="muted" id="emailStatus"></p>
+    <div class="row"><button class="btn" id="testEmail">Send test email</button></div>
+  </section>
 </main>
 
-<script src="{{ url_for('static', filename='chart.umd.js') }}"></script>
 <script>
 const $ = id => document.getElementById(id);
-const MAXPTS = 240;
-const LABELS = {safe: 'Safe', warning: 'Warning', danger: 'Danger', warmup: 'Warming up', error: 'Sensor error'};
+const H = [];
 let since = 0, busy = false;
-const times = [], gasData = [], vibData = [], thrData = [];
-
-const chart = new Chart($('chart'), {
-  type: 'line',
-  data: { labels: times, datasets: [
-    { label: 'Gas (0-1023)', data: gasData, borderColor: '#0f7f9c', backgroundColor: '#0f7f9c', borderWidth: 2, pointRadius: 0, tension: .25, yAxisID: 'y' },
-    { label: 'Threshold', data: thrData, borderColor: '#c22f2f', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, yAxisID: 'y' },
-    { label: 'Vibration', data: vibData, borderColor: 'rgba(194,47,47,.0)', backgroundColor: 'rgba(240,160,40,.35)', fill: true, stepped: true, pointRadius: 0, yAxisID: 'y1' }
-  ]},
-  options: { animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-    scales: { y: { min: 0, max: 1023, title: { display: true, text: 'Gas (ADC)' } },
-              y1: { min: 0, max: 1, position: 'right', display: false },
-              x: { ticks: { maxTicksLimit: 8, autoSkip: true } } },
-    plugins: { legend: { position: 'bottom' } } }
-});
-
-function fmt(sec) { const m = Math.floor(sec / 60), s = sec % 60; return m + ':' + String(s).padStart(2, '0'); }
+const TXT = {
+  safe: ['All clear', 'Gas and vibration are both normal.'],
+  warning: ['Gas is rising', 'The level is close to the alarm threshold.'],
+  error: ['Sensor problem', 'A sensor is not responding. See the message above.']
+};
+const fmt = sec => Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
 function list(ul, items) { ul.replaceChildren(...items.map(t => { const li = document.createElement('li'); li.textContent = t; return li; })); }
 
+function drawTrace(thr) {
+  const w = 720, h = 230, n = H.length;
+  if (!n) return;
+  const x = i => (i + 240 - n) / 239 * w, y = g => h - g / 1023 * h;
+  let p = '', b = '';
+  H.forEach((q, i) => {
+    p += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(q.g).toFixed(1);
+    if (q.v) b += '<rect class="vb" x="' + x(i).toFixed(1) + '" y="0" width="' + (w / 239 + .5).toFixed(1) + '" height="' + h + '"/>';
+  });
+  $('trace').innerHTML = b
+    + '<path class="ar" d="' + p + 'L' + w + ' ' + h + 'L' + x(0).toFixed(1) + ' ' + h + 'Z"/>'
+    + '<line class="th" x1="0" x2="' + w + '" y1="' + y(thr) + '" y2="' + y(thr) + '"/>'
+    + '<path class="ln" d="' + p + '"/>';
+}
+
 function render(d) {
-  const pill = $('statusPill'); pill.textContent = LABELS[d.status] || d.status; pill.className = 'pill ' + d.status;
+  document.body.dataset.s = d.status;
+  let t, s;
+  if (d.status === 'danger') {
+    const g = d.reasons.some(r => r.indexOf('Gas') === 0);
+    t = g && d.vibration ? 'Gas and vibration' : g ? 'Gas alarm' : 'Vibration';
+    s = d.reasons.join('. ') + '.' + (d.buzzer_on && !d.muted ? ' Buzzer sounding.' : '');
+  } else if (d.status === 'warmup') {
+    t = 'Warming up'; s = 'Gas alarms are off for ' + fmt(d.warmup_left) + ' while the MQ-2 heats up.';
+  } else { t = TXT[d.status][0]; s = TXT[d.status][1]; }
+  $('verdict').textContent = t; $('sub').textContent = s;
+
   $('gasVal').textContent = d.gas === null ? '--' : d.gas;
-  const pct = d.gas === null ? 0 : d.gas / 1023 * 100;
-  $('gasFill').style.width = pct + '%';
-  $('gasFill').style.background = d.status === 'danger' && d.gas > d.threshold ? 'var(--danger)' : d.status === 'warning' ? 'var(--warn)' : 'var(--safe)';
+  $('gasFill').style.width = (d.gas === null ? 0 : d.gas / 1023 * 100) + '%';
   $('gasTick').style.left = 'calc(' + d.threshold / 1023 * 100 + '% - 1px)';
   $('tickVal').textContent = d.threshold;
   $('gasVolt').textContent = d.gas_voltage === null ? '--' : d.gas_voltage;
-  const v = $('vibState'); v.textContent = d.vibration ? 'DETECTED' : 'Not detected'; v.className = 'state ' + (d.vibration ? 'on' : 'off');
-  $('bzState').textContent = d.buzzer_on ? 'ON' : 'OFF'; $('ledState').textContent = d.led_on ? 'ON' : 'OFF';
-  $('bzMode').textContent = '(' + d.buzzer_mode + ')'; $('ledMode').textContent = '(' + d.led_mode + ')';
+
+  $('vibChip').classList.toggle('on', d.vibration); $('vibChip').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
+  $('bzChip').classList.toggle('on', d.buzzer_on); $('bzChip').textContent = 'Buzzer ' + (d.buzzer_on ? (d.muted ? 'muted' : 'on') : 'off') + ' (' + d.buzzer_mode + ')';
+  $('ledChip').classList.toggle('on', d.led_on); $('ledChip').textContent = 'LED ' + (d.led_on ? 'on' : 'off') + ' (' + d.led_mode + ')';
   $('mutedNote').hidden = !d.muted;
-  document.querySelectorAll('#bzBtns button').forEach(b => b.classList.toggle('active', b.dataset.v === d.buzzer_mode));
-  document.querySelectorAll('#ledBtns button').forEach(b => b.classList.toggle('active', b.dataset.v === d.led_mode));
-  $('alarm').hidden = d.reasons.length === 0; list($('alarmList'), d.reasons);
-  $('alarmTitle').textContent = 'ALARM' + (d.buzzer_on && !d.muted ? ' - buzzer sounding' : '');
+  document.querySelectorAll('[data-a=buzzer]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.buzzer_mode));
+  document.querySelectorAll('[data-a=led]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.led_mode));
   $('errors').hidden = d.errors.length === 0; list($('errorList'), d.errors);
-  $('warmup').hidden = d.warmup_left <= 0; $('warmLeft').textContent = fmt(d.warmup_left);
+
   if (document.activeElement !== $('thrRange') && document.activeElement !== $('thrNum')) { $('thrRange').value = d.threshold; $('thrNum').value = d.threshold; }
   $('lastAlert').textContent = d.last_alert ? new Date(d.last_alert.ts * 1000).toLocaleTimeString() + ' - ' + d.last_alert.kind + ': ' + d.last_alert.message : 'None since the app started';
   $('emailStatus').textContent = d.email_status + (d.last_email ? ' (' + new Date(d.last_email * 1000).toLocaleTimeString() + ')' : '');
 
-  for (const p of d.series) { times.push(new Date(p.t * 1000).toLocaleTimeString()); gasData.push(p.gas); vibData.push(p.vib); since = Math.max(since, p.t); }
-  while (times.length > MAXPTS) { times.shift(); gasData.shift(); vibData.shift(); }
-  thrData.length = 0; times.forEach(() => thrData.push(d.threshold));
-  chart.update('none');
+  for (const q of d.series) { if (q.gas !== null) H.push({ g: q.gas, v: q.vib }); since = Math.max(since, q.t); }
+  while (H.length > 240) H.shift();
+  drawTrace(d.threshold);
 }
 
 async function poll() {
@@ -140,9 +138,12 @@ async function poll() {
   try {
     const r = await fetch('/data?since=' + since, { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
-    render(await r.json()); $('conn').hidden = true;
-  } catch (e) { $('conn').hidden = false; $('statusPill').textContent = 'Offline'; $('statusPill').className = 'pill error'; }
-  finally { busy = false; }
+    render(await r.json());
+  } catch (e) {
+    document.body.dataset.s = 'error';
+    $('verdict').textContent = 'No connection';
+    $('sub').textContent = 'Cannot reach the Raspberry Pi. Check that app.py is running and that you are on the same network.';
+  } finally { busy = false; }
 }
 
 async function send(action, value) {
@@ -153,8 +154,7 @@ async function send(action, value) {
   poll();
 }
 
-document.querySelectorAll('#bzBtns button').forEach(b => b.onclick = () => send('buzzer', b.dataset.v));
-document.querySelectorAll('#ledBtns button').forEach(b => b.onclick = () => send('led', b.dataset.v));
+document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => send(b.dataset.a, b.dataset.v));
 $('muteBtn').onclick = () => send('mute'); $('resetBtn').onclick = () => send('reset');
 $('testEmail').onclick = () => send('test_email');
 $('thrRange').oninput = () => $('thrNum').value = $('thrRange').value;
