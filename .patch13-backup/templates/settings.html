@@ -4,9 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Settings - Gas & Vibration Monitor</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body data-s="safe">
 <header>
@@ -93,14 +92,11 @@ function sync(d) {
 }
 
 async function poll() {
-  if (busy || document.hidden) return; busy = true;
-  const g = window.alarmGen ? window.alarmGen() : 0;
+  if (busy) return; busy = true;
   try {
     const r = await fetch('/data?since=1e18', { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
-    if (window.alarmFeed) window.alarmFeed(d, g);
-    sync(d);
+    sync(await r.json());
   } catch (e) { document.body.dataset.s = 'error'; $('emailStatus').textContent = 'Cannot reach the Raspberry Pi.'; }
   finally { busy = false; }
 }
@@ -137,8 +133,7 @@ $('testEmail').onclick = async () => { if (await saveEmail()) { $('emMsg').textC
 if ($('simGas')) { $('simGas').onclick = () => send('sim_gas'); $('simVib').onclick = () => send('sim_vibration'); }
 
 loadEmail(); poll(); setInterval(poll, 1000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 </script>
-<script src="/static/alarm.js?v=11"></script>
+<script src="/static/alarm.js?v=10"></script>
 </body>
 </html>

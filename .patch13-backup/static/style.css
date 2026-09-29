@@ -6,9 +6,8 @@ body[data-s=danger]{--bg:#b3121b;--ink:#fff}
 body[data-s=warmup]{--bg:#23384a;--ink:#e6f1fb}
 body[data-s=error]{--bg:#3f2a5a;--ink:#f1e8ff}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font:400 1rem/1.5 Figtree,"Segoe UI",system-ui,sans-serif;transition:background .8s,color .8s}
-body::before{content:"";position:fixed;inset:0;z-index:-1;background:#8f0d15;opacity:0;pointer-events:none}
-body[data-s=danger]::before{animation:pulse 1.8s ease-in-out infinite;will-change:opacity}
-@keyframes pulse{50%{opacity:1}}
+body[data-s=danger]{animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{50%{background:#8f0d15}}
 :focus-visible{outline:3px solid var(--ink);outline-offset:3px}
 [hidden]{display:none!important}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:20px clamp(18px,5vw,56px)}
@@ -64,7 +63,7 @@ th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--edge);font-
 th{position:sticky;top:0;background:var(--bg);font-weight:600}
 h2{font-size:1rem;font-weight:600;opacity:.85;margin:0 0 12px}
 @media(max-width:800px){.row2,.two{grid-template-columns:1fr}}
-@media(prefers-reduced-motion:reduce){*{transition:none!important}body[data-s=danger]::before{animation:none}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}body[data-s=danger]{animation:none}}
 
 /* ambient-settings */
 .stack{display:grid;gap:20px}
@@ -146,7 +145,7 @@ body.alarming{overflow:hidden}
 @keyframes apop{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes afade{from{opacity:0}to{opacity:1}}
 @keyframes aring{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.9);opacity:0}}
-.alarm{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;overflow:auto;background:radial-gradient(circle at 50% 30%,rgba(120,14,22,.9),rgba(6,8,12,.95) 70%);animation:afade .15s ease-out}
+.alarm{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;overflow:auto;background:radial-gradient(circle at 50% 30%,rgba(179,18,27,.35),rgba(6,8,12,.82) 70%);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);animation:afade .15s ease-out}
 .acard{width:100%;max-width:380px;padding:30px 26px 26px;border-radius:28px;background:linear-gradient(160deg,rgba(255,255,255,.14),rgba(255,255,255,.05));border:1px solid rgba(255,255,255,.2);box-shadow:0 30px 80px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.25);color:#fff;text-align:center;animation:apop .2s ease-out}
 .ahead{display:flex;flex-direction:column;align-items:center;gap:14px;margin-bottom:6px}
 .aico{position:relative;width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:rgba(255,90,95,.18);color:#ff8589}

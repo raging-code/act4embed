@@ -57,17 +57,8 @@
     }
   }
 
-  let fedAt = 0;                                       // last time the page handed us a fresh /data answer
-  window.alarmGen = () => gen;
-  window.alarmFeed = (d, g) => {                       // pages that already poll /data pass the answer here (no 2nd request)
-    if (!d || g !== gen || resetting) return;          // answer is older than a Reset: ignore it
-    fedAt = Date.now();
-    if (d.status) document.body.dataset.s = d.status;
-    try { update(d); } catch (e) { console.error('[alarm] pop-up error:', e); }
-  };
-
   async function poll(force) {
-    if (!force && (busy || resetting || document.hidden || Date.now() - fedAt < 2500)) return;
+    if (!force && (busy || resetting)) return;
     const my = gen; let d = null; busy = true;
     try {
       const r = await fetch('/data?since=1e18', { cache: 'no-store' });
@@ -87,5 +78,4 @@
     poll(true);                   // confirm at once (re-opens only if the server still reports an alarm)
   };
   poll(); setInterval(poll, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 })();

@@ -26,7 +26,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.gzip import GZipMiddleware
 from fastapi.templating import Jinja2Templates
 
 import config
@@ -130,33 +129,21 @@ load_email_settings()
 
 
 # ----------------------------------------------------------------- database
-def _connect():
-    """One short-lived connection. The database is in WAL mode (see init_db) and synchronous=NORMAL means a
-    commit no longer waits for the SD card to flush every time: far less stutter on a Raspberry Pi."""
-    c = sqlite3.connect(DB_PATH, timeout=10)
-    c.execute("PRAGMA synchronous=NORMAL")
-    return c
-
-
 def db_exec(sql, args=()):
-    with closing(_connect()) as c:
+    with closing(sqlite3.connect(DB_PATH, timeout=10)) as c:
         cur = c.execute(sql, args)
         c.commit()
         return cur.lastrowid
 
 
 def db_query(sql, args=()):
-    with closing(_connect()) as c:
+    with closing(sqlite3.connect(DB_PATH, timeout=10)) as c:
         c.row_factory = sqlite3.Row
         return [dict(r) for r in c.execute(sql, args).fetchall()]
 
 
 def init_db():
-    with closing(_connect()) as c:
-        try:
-            c.execute("PRAGMA journal_mode=WAL")    # the History page can read while the logger writes
-        except sqlite3.DatabaseError:
-            pass
+    with closing(sqlite3.connect(DB_PATH, timeout=10)) as c:
         c.executescript(
             """
             CREATE TABLE IF NOT EXISTS readings(
@@ -172,55 +159,6 @@ def init_db():
         c.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
         c.execute("DELETE FROM alerts WHERE ts < ?", (cutoff,))
         c.commit()
-
-
-# ---- batched logging: one commit per LOG_FLUSH_SECONDS instead of one connection + commit per reading
-LOG_FLUSH_SECONDS = 10
-_log_buf = []
-_log_lock = threading.Lock()
-_log_state = {"flush": time.time(), "prune": time.time()}
-
-
-def flush_readings():
-    with _log_lock:
-        rows = _log_buf[:]
-        del _log_buf[:]
-    if not rows:
-        return
-    try:
-        with closing(_connect()) as c:
-            c.executemany("INSERT INTO readings(ts, gas, vib, status) VALUES(?,?,?,?)", rows)
-            c.commit()
-    except Exception as e:
-        print("[db] could not write readings:", e)
-        with _log_lock:
-            _log_buf[:0] = rows[-300:]      # try again next time, but never grow without limit
-
-
-def prune_old():
-    """Delete rows older than RETENTION_DAYS (init_db only did this at start-up)."""
-    try:
-        cutoff = int(time.time() - config.RETENTION_DAYS * 86400)
-        with closing(_connect()) as c:
-            c.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
-            c.execute("DELETE FROM alerts WHERE ts < ?", (cutoff,))
-            c.commit()
-    except Exception as e:
-        print("[db] could not prune old rows:", e)
-
-
-def log_reading(now, gas, vib, status):
-    with _log_lock:
-        _log_buf.append((int(now), gas, vib, status))
-    if now - _log_state["flush"] >= LOG_FLUSH_SECONDS:
-        _log_state["flush"] = now
-        flush_readings()
-    if now - _log_state["prune"] >= 6 * 3600:
-        _log_state["prune"] = now
-        prune_old()
-
-
-atexit.register(flush_readings)
 
 
 # ----------------------------------------------------------------- esp32 input
@@ -568,7 +506,8 @@ def sensor_loop():
             # ---- log to database
             if gas is not None and now - last_log >= config.LOG_INTERVAL:
                 last_log = now
-                log_reading(now, gas, int(vibration), status)
+                db_exec("INSERT INTO readings(ts, gas, vib, status) VALUES(?,?,?,?)",
+                        (int(now), gas, int(vibration), status))
         except Exception:
             traceback.print_exc()
             time.sleep(1)
@@ -584,20 +523,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Gas & Vibration Monitor", lifespan=lifespan)
-
-
-class CachedStatic(StaticFiles):
-    """Static files with a 1-day browser cache (the pages link them as ?v=N, so a new version is always fetched)."""
-    async def get_response(self, path, scope):
-        resp = await super().get_response(path, scope)
-        if resp.status_code in (200, 304):
-            resp.headers["Cache-Control"] = "public, max-age=86400"
-        return resp
-
-
-# only answers > 1.5 KB are compressed (the small once-a-second /data answers are not); level 3 = light on the Pi CPU
-app.add_middleware(GZipMiddleware, minimum_size=1500, compresslevel=3)
-app.mount("/static", CachedStatic(directory=os.path.join(BASE_DIR, "static")), name="static")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
@@ -638,13 +564,7 @@ def data(since: str = "0"):
         since_ts = 0.0
     with lock:
         out = dict(state)
-        new = []
-        for p in reversed(series):          # newest first: stop at the first sample the browser already has
-            if p["t"] <= since_ts:
-                break
-            new.append(p)
-        new.reverse()
-        out["series"] = new
+        out["series"] = [p for p in series if p["t"] > since_ts]
     out.update(esp32_snapshot())
     return JSONResponse(out)
 
@@ -786,26 +706,19 @@ def api_history(request: Request):
         r = db_query("SELECT MIN(ts) AS m FROM readings WHERE ts < ?", (end,))
         start = r[0]["m"] or end
     bucket = max(1, (end - start) // 600)          # about 600 chart points max
-    with closing(_connect()) as c:
-        c.row_factory = sqlite3.Row
-        agg = c.execute(
-            "SELECT (ts / ?) * ? AS t, COUNT(*) AS n, COUNT(gas) AS ng, SUM(gas) AS sg, MAX(gas) AS mg, "
-            "ROUND(AVG(gas)) AS gas, MAX(vib) AS vib, ROUND(AVG(vib) * 100) AS vib_pct, SUM(vib) AS sv "
-            "FROM readings WHERE ts >= ? AND ts < ? GROUP BY t ORDER BY t",
-            (bucket, bucket, start, end)).fetchall()
-        rows = [dict(r) for r in c.execute(
-            "SELECT ts, gas, vib, status FROM readings WHERE ts >= ? AND ts < ? "
-            "ORDER BY ts DESC LIMIT 100", (start, end))]
-        alerts = [dict(r) for r in c.execute(
-            "SELECT ts, kind, message, email_sent FROM alerts WHERE ts >= ? AND ts < ? "
-            "ORDER BY ts DESC LIMIT 100", (start, end))]
-    chart = [{"t": r["t"], "gas": r["gas"], "vib": r["vib"], "vib_pct": r["vib_pct"]} for r in agg]
-    n_all = sum(r["n"] for r in agg)
-    n_gas = sum(r["ng"] for r in agg)
-    stats = {"n": n_all,
-             "max_gas": max((r["mg"] for r in agg if r["mg"] is not None), default=None),
-             "avg_gas": int(sum(r["sg"] or 0 for r in agg) / n_gas + 0.5) if n_gas else None,
-             "vib_samples": sum(r["sv"] or 0 for r in agg) if n_all else None}
+    chart = db_query(
+        "SELECT (ts / ?) * ? AS t, ROUND(AVG(gas)) AS gas, MAX(vib) AS vib, ROUND(AVG(vib) * 100) AS vib_pct "
+        "FROM readings WHERE ts >= ? AND ts < ? GROUP BY t ORDER BY t",
+        (bucket, bucket, start, end))
+    rows = db_query(
+        "SELECT ts, gas, vib, status FROM readings WHERE ts >= ? AND ts < ? "
+        "ORDER BY ts DESC LIMIT 100", (start, end))
+    alerts = db_query(
+        "SELECT ts, kind, message, email_sent FROM alerts WHERE ts >= ? AND ts < ? "
+        "ORDER BY ts DESC LIMIT 100", (start, end))
+    stats = db_query(
+        "SELECT COUNT(*) AS n, MAX(gas) AS max_gas, ROUND(AVG(gas)) AS avg_gas, "
+        "SUM(vib) AS vib_samples FROM readings WHERE ts >= ? AND ts < ?", (start, end))[0]
     return JSONResponse({"chart": chart, "rows": rows, "alerts": alerts, "stats": stats,
                          "threshold": settings["threshold"]})
 

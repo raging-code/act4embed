@@ -4,9 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gas & Vibration Monitor</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body data-s="warmup">
 <header>
@@ -66,8 +65,6 @@
 
 <script>
 const $ = id => document.getElementById(id);
-function setText(id, v) { const e = $(id); v = String(v); if (e.textContent !== v) e.textContent = v; }   // no re-layout when unchanged
-let errKey = '', drawnThr = null;
 const S = [];                     // every sample: { t: time, g: gas or null, v: vibration 0/1 }
 const MAXS = 7200;                // 1 hour at 2 samples per second (GRAPH_POINTS in config.py)
 const SC = [$('gsc'), $('vsc')];  // the two scrolling graph boxes
@@ -93,27 +90,15 @@ function showZoom(live) {
   const t = zoom.toFixed(zoom < 1 ? 2 : 1) + '\u00d7 \u00b7 ' + (live ? 'live' : 'scrolled back');
   document.querySelectorAll('.zlbl').forEach(e => { e.textContent = t; });
 }
-let raf = 0;
-function later() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; redraw(true); }); }
-function onScroll() {
-  showZoom(atEnd());
-  if (!DR) return;
-  const l = SC[0].scrollLeft, cw = SC[0].clientWidth, m = cw * 0.3;
-  if ((DR.a > 0 && l < DR.a + m) || (DR.b < DR.total && l + cw > DR.b - m)) later();
-}
+function onScroll() { showZoom(atEnd()); }
 
 const IV = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
-const TF = {};                   // one Intl.DateTimeFormat per label style (toLocaleTimeString per tick was very slow)
-function fmtTick(t, sec) {
-  const f = TF[sec] || (TF[sec] = new Intl.DateTimeFormat([], sec ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' }));
-  return f.format(t * 1000);
-}
-function ticks(L, a, b) {         // a..b = the drawn part of the graph, in px
+function ticks(L) {
   const r = [];
   if (!S.length) return r;
   const iv = IV.find(v => v * L.pps >= 90) || 3600;
-  const ta = Math.max(L.t0, timeAt(L, a) - iv), tb = Math.min(L.tEnd, timeAt(L, b) + iv);
-  for (let t = Math.ceil(ta / iv) * iv; t <= tb; t += iv) r.push({ x: L.x(t), s: fmtTick(t, iv < 60) });
+  const o = iv < 60 ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' };
+  for (let t = Math.ceil(L.t0 / iv) * iv; t <= L.tEnd; t += iv) r.push({ x: L.x(t), s: new Date(t * 1000).toLocaleTimeString([], o) });
   return r;
 }
 const PAD = 12;                   // empty space right of the newest sample, so the end-dot is not clipped
@@ -138,9 +123,7 @@ function curve(p) {
   }
   return d;
 }
-function aurDefs(y1, y2) {
-  return '<defs><linearGradient id="aurG" gradientUnits="userSpaceOnUse" x1="0" y1="' + y1.toFixed(1) + '" x2="0" y2="' + y2.toFixed(1) + '"><stop offset="0" style="stop-color:var(--acc);stop-opacity:.42"/><stop offset="1" style="stop-color:var(--acc);stop-opacity:0"/></linearGradient></defs>';
-}
+const AUR_DEFS = '<defs><linearGradient id="aurG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--acc);stop-opacity:.42"/><stop offset="1" style="stop-color:var(--acc);stop-opacity:0"/></linearGradient></defs>';
 function gridSvg(tk, base, h, total, fr) {
   let g = '', s = '';
   (fr || []).forEach(f => {
@@ -152,47 +135,26 @@ function gridSvg(tk, base, h, total, fr) {
 }
 function fit(el, L, h) { el.setAttribute('viewBox', '0 0 ' + L.total + ' ' + h); el.style.width = L.total + 'px'; }
 
-/* ---------- draw only what is on screen ----------
-   The SVG keeps its full width (scrolling, zoom and layout are unchanged) but only the samples between
-   [scrollLeft - 1 screen] and [scrollLeft + 2 screens] are turned into path data. */
-const MINGAP = 1.25;             // px: samples closer than this are merged (invisible with a 2.5 px line)
-let DR = null;                   // px range that is drawn right now { a, b, total }
-function timeAt(L, x) { return L.tEnd - (L.total - PAD - x) / L.pps; }
-function firstAtOrAfter(t) {     // binary search: S is sorted by time
-  let lo = 0, hi = S.length;
-  while (lo < hi) { const m = (lo + hi) >> 1; if (S[m].t < t) lo = m + 1; else hi = m; }
-  return lo;
-}
-function windowOf(L, left) {
-  const a = Math.max(0, left - L.cw), b = Math.min(L.total, left + 2 * L.cw);
-  const i0 = firstAtOrAfter(timeAt(L, a)), i1 = firstAtOrAfter(timeAt(L, b));
-  return { a, b, i0: Math.max(0, i0 - 1), i1: Math.min(S.length, i1 + 1) };   // one extra sample each side keeps the line joined
-}
-
-function drawGas(L, tk, W) {
+function drawGas(L, tk) {
   const el = $('trace'), h = 230, base = h - 16, y = g => base - g / 1023 * (base - 8);
   const gs = gridSvg(tk, base, h, L.total, [0.25, 0.5, 0.75]);
-  const lastI = S.length - 1;
   const segs = []; let cur = [], px = 0, pt = 0;
-  for (let i = W.i0; i < W.i1; i++) {
-    const q = S[i];
+  for (const q of S) {
     if (q.g === null) { if (cur.length) segs.push(cur); cur = []; continue; }
     if (cur.length && q.t - pt > 3) { segs.push(cur); cur = []; }
     pt = q.t;
     const x = L.x(q.t);
-    if (cur.length && x - px < MINGAP && i !== lastI) continue;      // zoomed far out: skip points closer than ~1 px
+    if (cur.length && x - px < 0.75) continue;      // zoomed far out: skip points closer than a pixel
     cur.push([x, y(q.g)]); px = x;
   }
   if (cur.length) segs.push(cur);
-  let gmax = 0;                                                       // fill gradient fades from the highest reading
-  for (let i = 0; i <= lastI; i++) { const g = S[i].g; if (g !== null && g > gmax) gmax = g; }
   let ar = '', ln = '';
   segs.forEach(s => {
     const d = curve(s), a = s[0][0].toFixed(1), b = s[s.length - 1][0].toFixed(1);
     ln += '<path class="ln" d="' + d + '"/>';
     ar += '<path d="' + d + 'L' + b + ' ' + base + 'L' + a + ' ' + base + 'Z" fill="url(#aurG)"/>';
   });
-  const ty = y(thr), last = S[lastI];
+  const ty = y(thr), last = S[S.length - 1];
   const zone = '<rect class="zone" x="0" y="8" width="' + L.total + '" height="' + Math.max(0, ty - 8).toFixed(1) + '"/>';
   const tl = '<line class="thr" x1="0" x2="' + L.total + '" y1="' + ty.toFixed(1) + '" y2="' + ty.toFixed(1) + '"/>'
     + '<text class="thl" text-anchor="end" x="' + (L.total - 8) + '" y="' + (ty < 26 ? ty + 15 : ty - 7).toFixed(1) + '">Alarm ' + thr + '</text>';
@@ -202,42 +164,35 @@ function drawGas(L, tk, W) {
     dot = '<circle class="halo" cx="' + cx + '" cy="' + cy + '" r="10"/><circle class="dotp" cx="' + cx + '" cy="' + cy + '" r="5"/>';
   }
   fit(el, L, h);
-  el.innerHTML = aurDefs(Math.min(y(gmax), base - 1), base) + zone + gs[0] + ar + tl + ln + dot + gs[1];
+  el.innerHTML = AUR_DEFS + zone + gs[0] + ar + tl + ln + dot + gs[1];
 }
 
-function drawVib(L, tk, W) {
+function drawVib(L, tk) {
   const el = $('vtrace'), h = 120, base = h - 16, hi = 10, lo = base - 3;
   const gs = gridSvg(tk, base, h, L.total);
   fit(el, L, h);
-  if (W.i1 <= W.i0) { el.innerHTML = gs[0] + gs[1]; return; }
+  if (!S.length) { el.innerHTML = gs[0] + gs[1]; return; }
   let p = '', prev = 0, x0 = 0, x1 = 0;
-  for (let i = W.i0; i < W.i1; i++) {
-    const q = S[i], x = L.x(q.t), Y = q.v ? hi : lo;
-    if (i === W.i0) { p = 'M' + x.toFixed(1) + ' ' + Y; x0 = x; }
+  S.forEach((q, i) => {
+    const x = L.x(q.t), Y = q.v ? hi : lo;
+    if (i === 0) { p = 'M' + x.toFixed(1) + ' ' + Y; x0 = x; }
     else if (q.v !== prev) p += 'L' + x.toFixed(1) + ' ' + (prev ? hi : lo) + 'L' + x.toFixed(1) + ' ' + Y;
     prev = q.v; x1 = x;
-  }
+  });
   p += 'L' + x1.toFixed(1) + ' ' + (prev ? hi : lo);
   el.innerHTML = gs[0]
     + '<path class="ar" d="' + p + 'L' + x1.toFixed(1) + ' ' + base + 'L' + x0.toFixed(1) + ' ' + base + 'Z"/>'
     + '<path class="ln" d="' + p + '"/>' + gs[1];
 }
 
-function layout() {
+function redraw(keepScroll) {
+  const follow = atEnd();
   const cw = SC[0].clientWidth || 720, n = S.length;
   const pps = cw / 120 * zoom, tEnd = n ? S[n - 1].t : 0, t0 = n ? S[0].t : 0;
   const total = Math.max(cw, Math.ceil((tEnd - t0) * pps) + PAD);
-  return { cw, pps, tEnd, t0, total, x: t => total - PAD - (tEnd - t) * pps };
-}
-
-function redraw(keepScroll, left) {   // left = scroll position the view will have (default: current, or the live edge)
-  const follow = atEnd();
-  const L = layout();
-  if (left === undefined) left = follow && !keepScroll ? L.total - L.cw : SC[0].scrollLeft;
-  const W = windowOf(L, left);
-  const tk = ticks(L, W.a, W.b);
-  LL = L; DR = { a: W.a, b: W.b, total: L.total };
-  drawGas(L, tk, W); drawVib(L, tk, W);
+  const L = { cw, pps, tEnd, t0, total, x: t => total - PAD - (tEnd - t) * pps };
+  const tk = ticks(L);
+  LL = L; drawGas(L, tk); drawVib(L, tk);
   if (follow && !keepScroll) SC.forEach(s => { s.scrollLeft = s.scrollWidth; });
   showZoom(follow);
   return L;
@@ -249,13 +204,12 @@ function setZoom(z, anchor) {         // anchor 0..1 = which part of the visible
   if (!n) { zoom = z; showZoom(true); return; }
   const tA = S[n - 1].t - (s.scrollWidth - (s.scrollLeft + anchor * cw)) / (cw / 120 * zoom);
   zoom = z;
-  const L0 = layout();
-  const left = Math.max(0, Math.min(L0.total - cw, wasEnd ? L0.total : L0.x(tA) - anchor * cw));
-  redraw(true, left);
+  const L = redraw(true);
+  const left = wasEnd ? L.total : L.x(tA) - anchor * cw;
   SC.forEach(e => { e.scrollLeft = left; });
   showZoom(atEnd());
 }
-function goLive() { zoom = 1; const L = layout(); redraw(true, L.total - L.cw); SC.forEach(s => { s.scrollLeft = s.scrollWidth; }); showZoom(true); }
+function goLive() { zoom = 1; redraw(true); SC.forEach(s => { s.scrollLeft = s.scrollWidth; }); showZoom(true); }
 
 SC.forEach((s, i) => {
   s.addEventListener('scroll', () => { const o = SC[1 - i]; if (Math.abs(o.scrollLeft - s.scrollLeft) > 1) o.scrollLeft = s.scrollLeft; onScroll(); });
@@ -279,12 +233,10 @@ function hoverTip(sc, lookup) {
   const tip = document.createElement('div'), gl = document.createElement('div');
   tip.className = 'gtip'; gl.className = 'gline'; tip.hidden = gl.hidden = true;
   card.append(gl, tip);
-  let hev = null, hraf = 0;                          // pointer moves are handled once per frame
-  const hide = () => { hev = null; tip.hidden = gl.hidden = true; };
-  const move = () => {
-    hraf = 0;
-    const e = hev;
-    if (!e || e.pointerType !== 'mouse' || sc.classList.contains('drag')) return hide();
+  const hide = () => { tip.hidden = gl.hidden = true; };
+  sc.addEventListener('pointerleave', hide);
+  sc.addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse' || sc.classList.contains('drag')) return hide();
     const r = sc.getBoundingClientRect(), c = card.getBoundingClientRect();
     const txt = lookup(e.clientX - r.left + sc.scrollLeft, sc.scrollWidth);
     if (!txt) return hide();
@@ -292,9 +244,7 @@ function hoverTip(sc, lookup) {
     const x = e.clientX - c.left, w = tip.offsetWidth / 2 + 8;
     gl.style.left = x + 'px'; gl.style.top = (r.top - c.top) + 'px'; gl.style.height = r.height + 'px';
     tip.style.left = Math.min(Math.max(x, w), c.width - w) + 'px'; tip.style.top = (r.top - c.top + 8) + 'px';
-  };
-  sc.addEventListener('pointerleave', hide);
-  sc.addEventListener('pointermove', e => { hev = e; if (!hraf) hraf = requestAnimationFrame(move); });
+  });
 }
 hoverTip(SC[0], xc => {
   if (!LL || !S.length) return null;
@@ -330,7 +280,7 @@ function render(d) {
   } else if (d.status === 'warmup') {
     t = 'Warming up'; s = 'Gas alarms are off for ' + fmt(d.warmup_left) + ' while the MQ-2 heats up.';
   } else { t = TXT[d.status][0]; s = TXT[d.status][1]; }
-  setText('verdict', t); setText('sub', s);
+  $('verdict').textContent = t; $('sub').textContent = s;
   $('muteBtn').hidden = !(d.buzzer_on && !d.muted);
 
   const ab = $('armBtn');
@@ -339,48 +289,37 @@ function render(d) {
   ab.textContent = armed ? 'Disarm' : 'Arm';
   ab.setAttribute('aria-label', armed ? 'System is armed. Press to disarm' : 'System is disarmed. Press to arm');
 
-  setText('gasVal', d.gas === null ? '--' : d.gas);
+  $('gasVal').textContent = d.gas === null ? '--' : d.gas;
   $('gasFill').style.width = (d.gas === null ? 0 : d.gas / 1023 * 100) + '%';
   $('gasTick').style.left = 'calc(' + d.threshold / 1023 * 100 + '% - 1px)';
-  setText('tickVal', d.threshold);
-  setText('gasVolt', d.gas_voltage === null ? '--' : d.gas_voltage);
-  setText('gasSrc', d.gas_source === 'esp32' ? 'ESP32' + (d.esp32_ip ? ' (' + d.esp32_ip + ')' : '') : d.gas_source === 'simulated' ? 'simulated' : 'no ESP32 data');
-  setText('gasRaw', d.gas_raw == null ? '--' : d.gas_raw);
-  setText('cleanAir', d.esp32_calibrating ? 'calibrating (30 s), keep the sensor in clean air...'
-    : d.clean_air == null ? 'not calibrated (type C in the ESP32 serial monitor)' : d.clean_air + ' of 1023 (raw ' + d.clean_air_raw + ' of 4095)');
+  $('tickVal').textContent = d.threshold;
+  $('gasVolt').textContent = d.gas_voltage === null ? '--' : d.gas_voltage;
+  $('gasSrc').textContent = d.gas_source === 'esp32' ? 'ESP32' + (d.esp32_ip ? ' (' + d.esp32_ip + ')' : '') : d.gas_source === 'simulated' ? 'simulated' : 'no ESP32 data';
+  $('gasRaw').textContent = d.gas_raw == null ? '--' : d.gas_raw;
+  $('cleanAir').textContent = d.esp32_calibrating ? 'calibrating (30 s), keep the sensor in clean air...'
+    : d.clean_air == null ? 'not calibrated (type C in the ESP32 serial monitor)' : d.clean_air + ' of 1023 (raw ' + d.clean_air_raw + ' of 4095)';
 
-  setText('vibState', d.vibration ? 'Vibration detected' : 'No vibration');
-  setText('vibLast', d.last_vib ? ago(d.ts - d.last_vib) : 'none since the app started');
+  $('vibState').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
+  $('vibLast').textContent = d.last_vib ? ago(d.ts - d.last_vib) : 'none since the app started';
 
-  const ek = d.errors.join('\n');
-  if (ek !== errKey) { errKey = ek; $('errors').hidden = d.errors.length === 0; list($('errorList'), d.errors); }
+  $('errors').hidden = d.errors.length === 0; list($('errorList'), d.errors);
 
   for (const q of d.series) { S.push({ t: q.t, g: q.gas, v: q.vib }); since = Math.max(since, q.t); }
-  if (S.length > MAXS) S.splice(0, S.length - MAXS);
-  if (d.series.length || d.threshold !== drawnThr) { drawnThr = d.threshold; redraw(); }   // nothing new: nothing to redraw
+  while (S.length > MAXS) S.shift();
+  redraw();
 }
 
-let timer = 0;
-function next(ms) { clearTimeout(timer); timer = setTimeout(poll, ms); }
 async function poll() {
-  if (busy) return;
-  if (document.hidden) return;                     // resumes from the visibilitychange handler below
-  busy = true;
-  let ok = false;
-  const g = window.alarmGen ? window.alarmGen() : 0;
+  if (busy) return; busy = true;
   try {
     const r = await fetch('/data?since=' + since, { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
-    if (window.alarmFeed) window.alarmFeed(d, g);  // pop-up + page colour from the same answer (alarm.js does not ask again)
-    render(d);
-    ok = true;
+    render(await r.json());
   } catch (e) {
     document.body.dataset.s = 'error';
     $('verdict').textContent = 'No connection';
     $('sub').textContent = 'Cannot reach the Raspberry Pi. Check that app.py is running and that you are on the same network.';
   } finally { busy = false; }
-  next(ok ? 1000 : 3000);
 }
 
 async function control(action) {
@@ -390,9 +329,8 @@ async function control(action) {
 }
 $('muteBtn').onclick = () => control('mute');
 $('armBtn').onclick = () => { $('armBtn').disabled = true; control(armed ? 'disarm' : 'arm'); };
-poll();
-document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+poll(); setInterval(poll, 1000);
 </script>
-<script src="/static/alarm.js?v=11"></script>
+<script src="/static/alarm.js?v=10"></script>
 </body>
 </html>
