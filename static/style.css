@@ -92,3 +92,20 @@ body[data-s=disarmed]{--bg:#2d3236;--ink:#eef1f3}
 .btn:disabled{opacity:.5;cursor:default}
 .chips+.chips{margin-top:10px}
 @media(prefers-reduced-motion:reduce){.dot.on{animation:none}}
+
+/* ambient-widgets-2: stacked widgets, arm button, zoomable graphs */
+.wtop{display:grid;grid-template-columns:minmax(260px,1fr) 1fr;gap:8px 40px;align-items:start}
+.btn.arm{color:#fff;border:2px solid #fff;font-weight:800;padding:12px 28px;font-size:1.05rem}
+.btn.arm.on{background:#15803d}
+.btn.arm.off{background:#b91c1c}
+.ghead{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.ghead h2,.ghead .lbl{margin:0}
+.zbar{display:flex;align-items:center;gap:8px}
+.zbar .zb{padding:5px 14px;min-width:46px}
+.zlbl{font-size:.9rem;opacity:.75;margin-right:6px;font-variant-numeric:tabular-nums}
+.gscroll{overflow-x:auto;overflow-y:hidden;cursor:grab;border-radius:14px;scrollbar-width:thin;overscroll-behavior-x:contain}
+.gscroll.drag{cursor:grabbing;user-select:none}
+.gscroll svg.trace{margin-top:0}
+.grid{stroke:var(--ink);opacity:.14;vector-effect:non-scaling-stroke}
+.tk{fill:var(--ink);opacity:.65;font:12px Figtree,system-ui,sans-serif}
+@media(max-width:800px){.wtop{grid-template-columns:1fr}}

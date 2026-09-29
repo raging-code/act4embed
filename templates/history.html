@@ -46,16 +46,16 @@
   </section>
 
   <section class="card">
-    <span class="lbl">Gas trend</span>
-    <svg class="trace" id="trace" viewBox="0 0 720 260" preserveAspectRatio="none" role="img" aria-label="Historical gas trend" style="height:280px"></svg>
-    <div class="axis"><span id="t0"></span><span>Dashed line: alarm threshold. Shaded bands: vibration seen.</span><span id="t1"></span></div>
+    <div class="ghead"><span class="lbl">Gas trend</span><div class="zbar"><span class="zlbl">1.0&times;</span><button class="btn zb" data-z="out" aria-label="Zoom out">&minus;</button><button class="btn zb" data-z="in" aria-label="Zoom in">+</button><button class="btn zb" data-z="reset">Reset</button></div></div>
+    <div class="gscroll" id="gsc" tabindex="0" role="region" aria-label="Gas history graph, scrolls sideways"><svg class="trace" id="trace" viewBox="0 0 720 260" preserveAspectRatio="none" role="img" aria-label="Historical gas trend" style="height:280px"></svg></div>
+    <div class="axis"><span id="t0"></span><span>Dashed line: alarm threshold. Shaded bands: vibration seen. Drag or swipe sideways; Ctrl + mouse wheel or +/- to zoom.</span><span id="t1"></span></div>
     <p class="muted" id="empty" hidden>No data in this range yet. Leave the dashboard app running to collect readings.</p>
   </section>
 
   <section class="card">
-    <span class="lbl">Vibration trend</span>
-    <svg class="trace" id="vtrace" viewBox="0 0 720 160" preserveAspectRatio="none" role="img" aria-label="Historical vibration trend" style="height:180px"></svg>
-    <div class="axis"><span id="vt0"></span><span>Bar height: share of readings with vibration (short events are drawn at a minimum height so they stay visible)</span><span id="vt1"></span></div>
+    <div class="ghead"><span class="lbl">Vibration trend</span><div class="zbar"><span class="zlbl">1.0&times;</span><button class="btn zb" data-z="out" aria-label="Zoom out">&minus;</button><button class="btn zb" data-z="in" aria-label="Zoom in">+</button><button class="btn zb" data-z="reset">Reset</button></div></div>
+    <div class="gscroll" id="vsc" tabindex="0" role="region" aria-label="Vibration history graph, scrolls sideways"><svg class="trace" id="vtrace" viewBox="0 0 720 160" preserveAspectRatio="none" role="img" aria-label="Historical vibration trend" style="height:180px"></svg></div>
+    <div class="axis"><span id="vt0"></span><span>Bar height: share of readings with vibration (short events are drawn at a minimum height so they stay visible). Moves together with the gas graph.</span><span id="vt1"></span></div>
   </section>
 
   <section class="two">
@@ -70,6 +70,9 @@
 const $ = id => document.getElementById(id);
 const tm = ts => new Date(ts * 1000).toLocaleString();
 function cell(tr, text) { const td = document.createElement('td'); td.textContent = text; tr.appendChild(td); }
+const SC = [$('gsc'), $('vsc')];
+const ZMAX = 40;
+let zoom = 1, rng = { t0: 0, t1: 0 };
 
 function query() {
   const p = $('preset').value;
@@ -81,7 +84,7 @@ function query() {
 
 function draw(pts, thr) {
   const w = 720, h = 260, el = $('trace');
-  if (!pts.length) { el.innerHTML = ''; $('t0').textContent = ''; $('t1').textContent = ''; return; }
+  if (!pts.length) { el.innerHTML = ''; rng = { t0: 0, t1: 0 }; return; }
   const t0 = pts[0].t, t1 = pts[pts.length - 1].t, span = Math.max(1, t1 - t0), bw = Math.max(2, w / pts.length);
   const x = t => (t - t0) / span * w, y = g => h - g / 1023 * h;
   let p = '', b = '';
@@ -94,13 +97,12 @@ function draw(pts, thr) {
     + '<path class="ar" d="' + p + 'L' + x(t1).toFixed(1) + ' ' + h + 'L0 ' + h + 'Z"/>'
     + '<line class="th" x1="0" x2="' + w + '" y1="' + y(thr) + '" y2="' + y(thr) + '"/>'
     + '<path class="ln" d="' + p + '"/>';
-  const label = t => span > 86400 ? new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : new Date(t * 1000).toLocaleTimeString();
-  $('t0').textContent = label(t0); $('t1').textContent = label(t1);
+  rng = { t0, t1: Math.max(t1, t0 + 1) };
 }
 
 function drawVib(pts) {
   const w = 720, h = 160, el = $('vtrace');
-  if (!pts.length) { el.innerHTML = ''; $('vt0').textContent = ''; $('vt1').textContent = ''; return; }
+  if (!pts.length) { el.innerHTML = ''; return; }
   const t0 = pts[0].t, t1 = pts[pts.length - 1].t, span = Math.max(1, t1 - t0), bw = Math.max(2, w / pts.length);
   let b = '';
   pts.forEach(q => {
@@ -109,9 +111,49 @@ function drawVib(pts) {
     b += '<rect class="vb" style="opacity:.75" x="' + ((q.t - t0) / span * w).toFixed(1) + '" y="' + (h - bh).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '"/>';
   });
   el.innerHTML = b + '<line class="th" x1="0" x2="' + w + '" y1="' + (h - 1) + '" y2="' + (h - 1) + '" style="stroke-dasharray:none"/>';
-  const label = t => span > 86400 ? new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : new Date(t * 1000).toLocaleTimeString();
-  $('vt0').textContent = label(t0); $('vt1').textContent = label(t1);
 }
+
+/* ---------- zoom + horizontal scroll (both graphs share one zoom and one scroll position) ---------- */
+function showRange() {
+  document.querySelectorAll('.zlbl').forEach(e => { e.textContent = zoom.toFixed(1) + '\u00d7'; });
+  const s = SC[0], W = s.scrollWidth || 1, span = rng.t1 - rng.t0;
+  if (!span) { ['t0', 't1', 'vt0', 'vt1'].forEach(id => { $(id).textContent = ''; }); return; }
+  const a = rng.t0 + s.scrollLeft / W * span, b = rng.t0 + Math.min(1, (s.scrollLeft + s.clientWidth) / W) * span;
+  const label = t => span > 86400 ? new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : new Date(t * 1000).toLocaleTimeString();
+  ['t0', 'vt0'].forEach(id => { $(id).textContent = label(a); });
+  ['t1', 'vt1'].forEach(id => { $(id).textContent = label(b); });
+}
+function onScroll() { showRange(); }
+function setZoom(z, anchor) {
+  z = Math.min(ZMAX, Math.max(1, z));
+  const s = SC[0], v = s.clientWidth, frac = (s.scrollLeft + anchor * v) / s.scrollWidth;
+  zoom = z;
+  SC.forEach(e => { e.firstElementChild.style.width = (z * 100) + '%'; });
+  const left = frac * s.scrollWidth - anchor * v;
+  SC.forEach(e => { e.scrollLeft = left; });
+  showRange();
+}
+function resetZoom() { zoom = 1; SC.forEach(e => { e.firstElementChild.style.width = ''; e.scrollLeft = 0; }); showRange(); }
+
+SC.forEach((s, i) => {
+  s.addEventListener('scroll', () => { const o = SC[1 - i]; if (Math.abs(o.scrollLeft - s.scrollLeft) > 1) o.scrollLeft = s.scrollLeft; onScroll(); });
+  s.addEventListener('wheel', e => {
+    if (!(e.ctrlKey || e.metaKey)) return;          // plain wheel keeps scrolling the page
+    e.preventDefault();
+    const r = s.getBoundingClientRect();
+    setZoom(zoom * (e.deltaY < 0 ? 1.25 : 0.8), (e.clientX - r.left) / r.width);
+  }, { passive: false });
+  let down = null;                                  // mouse drag = pan (touch already swipes natively)
+  s.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' || e.button !== 0) return; down = { x: e.clientX, l: s.scrollLeft }; s.setPointerCapture(e.pointerId); s.classList.add('drag'); });
+  s.addEventListener('pointermove', e => { if (down) s.scrollLeft = down.l - (e.clientX - down.x); });
+  const end = () => { down = null; s.classList.remove('drag'); };
+  s.addEventListener('pointerup', end); s.addEventListener('pointercancel', end);
+});
+
+document.querySelectorAll('.zb').forEach(b => {
+  b.onclick = () => { const k = b.dataset.z; if (k === 'in') setZoom(zoom * 1.5, 0.5); else if (k === 'out') setZoom(zoom / 1.5, 0.5); else resetZoom(); };
+});
+window.addEventListener('resize', showRange);
 
 async function load() {
   const q = query();
@@ -122,6 +164,7 @@ async function load() {
     const d = await r.json();
     draw(d.chart, d.threshold);
     drawVib(d.chart);
+    showRange();
     $('empty').hidden = d.chart.length > 0; $('empty').textContent = 'No data in this range yet. Leave the dashboard app running to collect readings.';
     $('sN').textContent = d.stats.n; $('sMax').textContent = d.stats.max_gas ?? '--';
     $('sAvg').textContent = d.stats.avg_gas ?? '--'; $('sVib').textContent = d.stats.vib_samples ?? 0; $('sAlerts').textContent = d.alerts.length;
@@ -130,8 +173,8 @@ async function load() {
   } catch (e) { $('empty').hidden = false; $('empty').textContent = 'Could not load history: ' + e.message; }
 }
 
-$('preset').onchange = () => { $('customBox').hidden = $('preset').value !== 'custom'; if ($('preset').value !== 'custom') load(); };
-$('apply').onclick = load;
+$('preset').onchange = () => { $('customBox').hidden = $('preset').value !== 'custom'; if ($('preset').value !== 'custom') { resetZoom(); load(); } };
+$('apply').onclick = () => { resetZoom(); load(); };
 load(); setInterval(() => { if ($('preset').value !== 'custom') load(); }, 15000);
 </script>
 </body>

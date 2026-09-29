@@ -33,7 +33,7 @@ VIB_HOLD_SECONDS = 3          # keep "vibration detected" on screen this long
 SAMPLE_INTERVAL = 0.5         # seconds between sensor reads
 LOG_INTERVAL = 2              # seconds between database log entries
 ALERT_MIN_GAP = 10            # min seconds between two logged alerts
-GRAPH_POINTS = 240            # points kept for the live graph (240 x 0.5s = 2 min)
+GRAPH_POINTS = 7200          # points kept for the live graphs (7200 x 0.5s = 1 hour); the Live page shows 2 min at 1x zoom and scrolls back
 RETENTION_DAYS = 30           # old log rows are deleted after this many days
 
 # ---------------- Email alerts (smtplib) ----------------
