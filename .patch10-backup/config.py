@@ -29,8 +29,7 @@ ADC_DIVIDER_RATIO = 1.5
 # ---------------- Alarm logic ----------------
 DEFAULT_GAS_THRESHOLD = 400   # 0-1023 ADC counts. Change it on the dashboard.
 WARMUP_SECONDS = 120          # gas alarms are ignored while the MQ-2 heats up
-VIB_ALARM_HOLD = 60           # a vibration alarm turns off this many seconds after it STARTED (or on Reset alarm)
-VIB_RESET_GRACE = 3           # after Reset alarm, vibration is ignored this long (the button press itself shakes the sensor)
+VIB_ALARM_HOLD = 60           # a vibration alarm turns off this many seconds after the LAST vibration (or on Reset alarm)
 VIB_HOLD_SECONDS = 3          # keep "vibration detected" on screen this long
 SAMPLE_INTERVAL = 0.5         # seconds between sensor reads
 LOG_INTERVAL = 2              # seconds between database log entries

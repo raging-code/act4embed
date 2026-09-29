@@ -1,5 +1,5 @@
 /* Alarm pop-up (Design 1: frosted glass). Loaded on EVERY page, polls /data by itself.
-   Gas stays on until "Reset alarm"; vibration clears 1 min after the last vibration.
+   Gas stays on until "Reset alarm"; vibration clears on Reset or 1 min after the alarm started.
    Reset closes the pop-up instantly; poll answers that were already on their way are ignored
    until the server has confirmed the reset. */
 (function () {

@@ -591,6 +591,19 @@ async def control(request: Request):
             ctrl["gas_ack"] = True          # ignore gas until the level has dropped to the threshold once
             ctrl["vib_ack"] = time.time()   # vibration before this moment no longer counts
             ctrl["muted"] = False
+            # answer right away: do not wait for the next sensor loop (up to SAMPLE_INTERVAL) to clear the state
+            state.update(gas_alarm=False, vib_alarm=False, vib_left=0, reasons=[])
+            if state.get("status") == "danger":
+                g_now, thr_now = state.get("gas"), settings["threshold"]
+                state["status"] = "warning" if (g_now is not None and g_now > thr_now * 0.7) else "safe"
+            fast_buzzer_off = ctrl["buzzer"] == "auto"
+            if fast_buzzer_off:
+                state["buzzer_on"] = False
+        if fast_buzzer_off:
+            try:
+                hw.set_output("buzzer", False)
+            except Exception:
+                pass                        # the sensor loop reports output errors
     elif action == "threshold":
         try:
             t = int(value)
@@ -611,6 +624,7 @@ async def control(request: Request):
         hw.sim_gas_until = time.time() + 10
         with lock:
             ctrl["sim_skip_warmup"] = True     # test button: do not wait for the MQ-2 warm-up
+            ctrl["gas_ack"] = False            # test button: alarm again even right after "Reset alarm"
     elif action == "sim_vibration" and SIMULATION:
         hw.vib_event = time.time()
     else:

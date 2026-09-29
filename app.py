@@ -289,7 +289,9 @@ atexit.register(hw.close)
 ctrl = {"buzzer": "auto", "led": "auto", "muted": False,
         "gas_latch": False,   # gas alarm is latched until "Reset alarm"
         "gas_ack": False,     # alarm was reset while gas was high: wait until the level has dropped once
-        "vib_ack": 0.0}       # time of the last "Reset alarm": vibration before it no longer counts
+        "vib_ack": 0.0,       # vibration up to this moment is ignored (Reset alarm, timeout, or while disarmed)
+        "vib_start": 0.0,     # when the running vibration alarm started (0 = no vibration alarm)
+        "reset_gen": 0}       # +1 on every "Reset alarm": lets the sensor loop see a reset that happened mid-pass
 series = deque(maxlen=config.GRAPH_POINTS)
 state = {
     "gas": None, "gas_voltage": None, "vibration": False, "status": "warmup",
@@ -384,6 +386,7 @@ def sensor_loop():
 
             # ---- decide alarm + outputs
             with lock:
+                my_gen = ctrl["reset_gen"]
                 thr = settings["threshold"]
                 warm = 0 if (SIMULATION and ctrl.get("sim_skip_warmup")) else warmup_left(now)
                 armed = settings["armed"]
@@ -396,10 +399,20 @@ def sensor_loop():
                     ctrl["gas_latch"] = True        # latched: stays on until "Reset alarm" is pressed
                 gas_alarm = bool(armed and ctrl["gas_latch"])
                 gas_warn = armed and gas is not None and warm == 0 and gas > thr * 0.7
-                vib_age = now - last_vib
-                # vibration: on for VIB_ALARM_HOLD seconds after the last pulse; disarmed: measured, never alarms
-                vib_alarm = bool(armed and last_vib > ctrl["vib_ack"] and vib_age < config.VIB_ALARM_HOLD)
-                vib_left = int(math.ceil(config.VIB_ALARM_HOLD - vib_age)) if vib_alarm else 0
+                # vibration: the alarm starts on the first vibration and ends on "Reset alarm" or
+                # VIB_ALARM_HOLD seconds after it STARTED (more vibration does not extend it).
+                # Disarmed: measured, never alarms, and old vibration is thrown away.
+                hold = config.VIB_ALARM_HOLD
+                if not armed:
+                    ctrl["vib_start"] = 0.0
+                    ctrl["vib_ack"] = now
+                if ctrl["vib_start"] and now - ctrl["vib_start"] >= hold:
+                    ctrl["vib_start"] = 0.0         # 1 minute is up
+                    ctrl["vib_ack"] = now           # only NEW vibration may start the next alarm
+                if armed and not ctrl["vib_start"] and last_vib > ctrl["vib_ack"]:
+                    ctrl["vib_start"] = now
+                vib_alarm = bool(armed and ctrl["vib_start"])
+                vib_left = max(0, int(math.ceil(hold - (now - ctrl["vib_start"])))) if vib_alarm else 0
                 alarm = gas_alarm or vib_alarm
                 if not alarm:
                     ctrl["muted"] = False       # mute lasts until the alarm ends
@@ -414,11 +427,16 @@ def sensor_loop():
                 led_on = (ld == "on") or (ld == "auto" and vib_alarm)
                 muted, bz_mode, led_mode = ctrl["muted"], bz, ld
 
-            for name, on in (("buzzer", buzzer_on), ("led", led_on)):
-                try:
-                    hw.set_output(name, on)
-                except Exception as e:
-                    errors.append(f"{name.upper()} error: {e}")
+            with lock:
+                stale = ctrl["reset_gen"] != my_gen
+                if not stale:
+                    for name, on in (("buzzer", buzzer_on), ("led", led_on)):
+                        try:
+                            hw.set_output(name, on)
+                        except Exception as e:
+                            errors.append(f"{name.upper()} error: {e}")
+            if stale:
+                continue                            # "Reset alarm" was pressed during this pass: redo it now
 
             if alarm:
                 status = "danger"
@@ -434,6 +452,8 @@ def sensor_loop():
                 status = "safe"
 
             with lock:
+                if ctrl["reset_gen"] != my_gen:
+                    continue                        # reset landed after the outputs: redo the pass
                 state.update(
                     gas=gas,
                     gas_voltage=None if gas is None else round(
@@ -589,7 +609,10 @@ async def control(request: Request):
         with lock:
             ctrl["gas_latch"] = False
             ctrl["gas_ack"] = True          # ignore gas until the level has dropped to the threshold once
-            ctrl["vib_ack"] = time.time()   # vibration before this moment no longer counts
+            ctrl["reset_gen"] += 1
+            ctrl["vib_start"] = 0.0         # vibration alarm off right now
+            # vibration up to now, plus a short grace for the shake of pressing the button, no longer counts
+            ctrl["vib_ack"] = time.time() + getattr(config, "VIB_RESET_GRACE", 3)
             ctrl["muted"] = False
             # answer right away: do not wait for the next sensor loop (up to SAMPLE_INTERVAL) to clear the state
             state.update(gas_alarm=False, vib_alarm=False, vib_left=0, reasons=[])
@@ -626,6 +649,8 @@ async def control(request: Request):
             ctrl["sim_skip_warmup"] = True     # test button: do not wait for the MQ-2 warm-up
             ctrl["gas_ack"] = False            # test button: alarm again even right after "Reset alarm"
     elif action == "sim_vibration" and SIMULATION:
+        with lock:
+            ctrl["vib_ack"] = min(ctrl["vib_ack"], time.time() - 0.01)   # test button: skip the post-reset grace
         hw.vib_event = time.time()
     else:
         return bad("unknown action")
