@@ -79,3 +79,16 @@ details{margin:0 0 20px}
 summary{cursor:pointer;font-weight:600;padding:4px 0}
 details .field{margin-top:14px}
 .msg{min-height:1.5em;margin:14px 0 0;font-weight:600}
+
+/* ambient-widgets: arm/disarm, merged widgets, vibration */
+body[data-s=disarmed]{--bg:#2d3236;--ink:#eef1f3}
+.wgt{display:flex;flex-direction:column}
+.gph{margin-top:auto;padding-top:22px}
+.gph h2{margin:0}
+.state{display:flex;align-items:center;gap:16px;font:800 clamp(2.2rem,5vw,3.6rem)/1.05 "Bricolage Grotesque",system-ui,sans-serif;letter-spacing:-.03em;margin:6px 0 4px}
+.dot{flex:none;width:.4em;height:.4em;border-radius:50%;border:3px solid var(--ink);transition:background .2s}
+.dot.on{background:var(--ink);animation:blink 1s ease-in-out infinite}
+@keyframes blink{50%{opacity:.35}}
+.btn:disabled{opacity:.5;cursor:default}
+.chips+.chips{margin-top:10px}
+@media(prefers-reduced-motion:reduce){.dot.on{animation:none}}

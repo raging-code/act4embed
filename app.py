@@ -60,14 +60,21 @@ lock = threading.Lock()
 
 # ----------------------------------------------------------------- settings
 def load_settings():
+    s = {"threshold": config.DEFAULT_GAS_THRESHOLD, "armed": True}
     try:
         with open(SETTINGS_PATH) as f:
-            t = int(json.load(f)["threshold"])
-            if 1 <= t <= 1023:
-                return {"threshold": t}
+            d = json.load(f)
     except Exception:
-        pass
-    return {"threshold": config.DEFAULT_GAS_THRESHOLD}
+        return s
+    if isinstance(d, dict):
+        try:
+            t = int(d.get("threshold"))
+            if 1 <= t <= 1023:
+                s["threshold"] = t
+        except (TypeError, ValueError):
+            pass
+        s["armed"] = bool(d.get("armed", True))
+    return s
 
 
 def save_settings():
@@ -287,6 +294,7 @@ state = {
     "warmup_left": config.WARMUP_SECONDS, "buzzer_on": False, "led_on": False,
     "buzzer_mode": "auto", "led_mode": "auto", "muted": False, "errors": [],
     "last_alert": None, "last_email": None,
+    "armed": settings["armed"], "last_vib": None,
     "email_status": "Email alerts are off" if not config.EMAIL_ENABLED else "No email sent yet",
     "email_enabled": config.EMAIL_ENABLED, "simulation": SIMULATION,
     "uptime": 0, "ts": time.time(),
@@ -375,19 +383,21 @@ def sensor_loop():
             with lock:
                 thr = settings["threshold"]
                 warm = warmup_left(now)
-                gas_alarm = gas is not None and warm == 0 and gas > thr
-                gas_warn = gas is not None and warm == 0 and gas > thr * 0.7
-                alarm = gas_alarm or vibration
+                armed = settings["armed"]
+                gas_alarm = armed and gas is not None and warm == 0 and gas > thr
+                gas_warn = armed and gas is not None and warm == 0 and gas > thr * 0.7
+                vib_alarm = armed and vibration     # disarmed: still measured, never alarms
+                alarm = gas_alarm or vib_alarm
                 if not alarm:
                     ctrl["muted"] = False       # mute lasts until the alarm ends
                 reasons = []
                 if gas_alarm:
                     reasons.append(f"Gas level {gas} is above the threshold {thr}")
-                if vibration:
+                if vib_alarm:
                     reasons.append("Vibration detected")
                 bz, ld = ctrl["buzzer"], ctrl["led"]
                 buzzer_on = (bz == "on") or (bz == "auto" and alarm and not ctrl["muted"])
-                led_on = (ld == "on") or (ld == "auto" and vibration)
+                led_on = (ld == "on") or (ld == "auto" and vib_alarm)
                 muted, bz_mode, led_mode = ctrl["muted"], bz, ld
 
             for name, on in (("buzzer", buzzer_on), ("led", led_on)):
@@ -400,6 +410,8 @@ def sensor_loop():
                 status = "danger"
             elif errors:
                 status = "error"
+            elif not armed:
+                status = "disarmed"
             elif warm > 0:
                 status = "warmup"
             elif gas_warn:
@@ -416,11 +428,12 @@ def sensor_loop():
                     threshold=thr, warmup_left=int(math.ceil(warm)),
                     buzzer_on=buzzer_on, led_on=led_on, buzzer_mode=bz_mode,
                     led_mode=led_mode, muted=muted, errors=errors,
-                    uptime=int(now - START_TIME), ts=now)
+                    uptime=int(now - START_TIME), ts=now, armed=armed,
+                    last_vib=round(last_vib, 1) if last_vib else None)
                 series.append({"t": round(now, 1), "gas": gas, "vib": int(vibration)})
 
             # ---- alert when an alarm starts, or a 2nd alarm type joins in
-            active = {k for k, on in (("Gas", gas_alarm), ("Vibration", vibration)) if on}
+            active = {k for k, on in (("Gas", gas_alarm), ("Vibration", vib_alarm)) if on}
             if (active - prev_active) and now - last_alert_ts >= config.ALERT_MIN_GAP:
                 last_alert_ts = now
                 kind = " + ".join(sorted(active))
@@ -550,6 +563,13 @@ async def control(request: Request):
     elif action == "reset":
         with lock:
             ctrl.update(buzzer="auto", led="auto", muted=False)
+    elif action in ("arm", "disarm"):
+        with lock:
+            settings["armed"] = action == "arm"
+            state["armed"] = settings["armed"]
+            if action == "disarm":
+                ctrl["muted"] = False
+        save_settings()
     elif action == "threshold":
         try:
             t = int(value)
@@ -598,7 +618,7 @@ def api_history(request: Request):
         start = r[0]["m"] or end
     bucket = max(1, (end - start) // 600)          # about 600 chart points max
     chart = db_query(
-        "SELECT (ts / ?) * ? AS t, ROUND(AVG(gas)) AS gas, MAX(vib) AS vib "
+        "SELECT (ts / ?) * ? AS t, ROUND(AVG(gas)) AS gas, MAX(vib) AS vib, ROUND(AVG(vib) * 100) AS vib_pct "
         "FROM readings WHERE ts >= ? AND ts < ? GROUP BY t ORDER BY t",
         (bucket, bucket, start, end))
     rows = db_query(

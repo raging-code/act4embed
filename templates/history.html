@@ -52,6 +52,12 @@
     <p class="muted" id="empty" hidden>No data in this range yet. Leave the dashboard app running to collect readings.</p>
   </section>
 
+  <section class="card">
+    <span class="lbl">Vibration trend</span>
+    <svg class="trace" id="vtrace" viewBox="0 0 720 160" preserveAspectRatio="none" role="img" aria-label="Historical vibration trend" style="height:180px"></svg>
+    <div class="axis"><span id="vt0"></span><span>Bar height: share of readings with vibration (short events are drawn at a minimum height so they stay visible)</span><span id="vt1"></span></div>
+  </section>
+
   <section class="two">
     <div class="card"><h2>Alert log</h2>
       <div class="scroll"><table><thead><tr><th>Time</th><th>Type</th><th>Details</th><th>Email</th></tr></thead><tbody id="alerts"></tbody></table></div></div>
@@ -92,6 +98,21 @@ function draw(pts, thr) {
   $('t0').textContent = label(t0); $('t1').textContent = label(t1);
 }
 
+function drawVib(pts) {
+  const w = 720, h = 160, el = $('vtrace');
+  if (!pts.length) { el.innerHTML = ''; $('vt0').textContent = ''; $('vt1').textContent = ''; return; }
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t, span = Math.max(1, t1 - t0), bw = Math.max(2, w / pts.length);
+  let b = '';
+  pts.forEach(q => {
+    if (!q.vib) return;
+    const bh = Math.max(24, (q.vib_pct == null ? 100 : q.vib_pct) / 100 * h);
+    b += '<rect class="vb" style="opacity:.75" x="' + ((q.t - t0) / span * w).toFixed(1) + '" y="' + (h - bh).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '"/>';
+  });
+  el.innerHTML = b + '<line class="th" x1="0" x2="' + w + '" y1="' + (h - 1) + '" y2="' + (h - 1) + '" style="stroke-dasharray:none"/>';
+  const label = t => span > 86400 ? new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : new Date(t * 1000).toLocaleTimeString();
+  $('vt0').textContent = label(t0); $('vt1').textContent = label(t1);
+}
+
 async function load() {
   const q = query();
   $('csv').href = '/export.csv?' + q;
@@ -100,6 +121,7 @@ async function load() {
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     draw(d.chart, d.threshold);
+    drawVib(d.chart);
     $('empty').hidden = d.chart.length > 0; $('empty').textContent = 'No data in this range yet. Leave the dashboard app running to collect readings.';
     $('sN').textContent = d.stats.n; $('sMax').textContent = d.stats.max_gas ?? '--';
     $('sAvg').textContent = d.stats.avg_gas ?? '--'; $('sVib').textContent = d.stats.vib_samples ?? 0; $('sAlerts').textContent = d.alerts.length;

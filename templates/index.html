@@ -20,11 +20,12 @@
   <section aria-live="polite">
     <h1 class="verdict" id="verdict">Connecting</h1>
     <p class="sub" id="sub">Waiting for the Raspberry Pi.</p>
-    <div class="row"><button class="btn fill" id="muteBtn" hidden>Mute alarm</button></div>
+    <div class="row"><button class="btn fill" id="muteBtn" hidden>Mute alarm</button><button class="btn" id="armBtn" disabled>Arm / Disarm</button></div>
+    <div class="chips"><span class="chip on" id="armChip">Armed</span><span class="chip" id="bzChip">Buzzer off</span><span class="chip" id="ledChip">LED off</span></div>
   </section>
 
-  <section class="row2">
-    <div class="card">
+  <section class="two">
+    <div class="card wgt">
       <span class="lbl">Gas level (MQ-2)</span>
       <div class="num"><span id="gasVal">--</span><small>of 1023</small></div>
       <div class="bar" aria-hidden="true"><i id="gasFill" style="width:0"></i><b id="gasTick"></b></div>
@@ -32,51 +33,70 @@
       <p class="muted">Sensor voltage: <span id="gasVolt">--</span> V</p>
       <p class="muted">Source: <span id="gasSrc">--</span> &middot; raw ADC <span id="gasRaw">--</span> of 4095</p>
       <p class="muted">Clean air baseline: <span id="cleanAir">--</span></p>
-      <div class="chips"><span class="chip" id="vibChip">No vibration</span><span class="chip" id="bzChip">Buzzer off</span><span class="chip" id="ledChip">LED off</span></div>
+      <div class="gph">
+        <h2>Gas, last 2 minutes</h2>
+        <svg class="trace" id="trace" viewBox="0 0 720 230" preserveAspectRatio="none" role="img" aria-label="Live gas trace"></svg>
+        <div class="axis"><span>2 min ago</span><span>Dashed line: alarm threshold</span><span>now</span></div>
+      </div>
     </div>
-    <div class="card">
-      <span class="lbl">Last 2 minutes</span>
-      <svg class="trace" id="trace" viewBox="0 0 720 230" preserveAspectRatio="none" role="img" aria-label="Live gas trace"></svg>
+
+    <div class="card wgt">
+      <span class="lbl">Vibration (SW-420)</span>
+      <div class="state"><i class="dot" id="vibDot" aria-hidden="true"></i><span id="vibState">--</span></div>
+      <p class="muted">Last vibration: <span id="vibLast">--</span></p>
+      <p class="muted">A detection stays on screen for a few seconds after the last pulse.</p>
+      <div class="gph">
+        <h2>Vibration, last 2 minutes</h2>
+        <svg class="trace" id="vtrace" viewBox="0 0 720 120" preserveAspectRatio="none" role="img" aria-label="Live vibration trace" style="height:120px"></svg>
+        <div class="axis"><span>2 min ago</span><span>High = vibration detected</span><span>now</span></div>
+      </div>
     </div>
   </section>
 
-  <section class="card">
-    <span class="lbl">Last alert</span>
-    <div id="lastAlert">None since the app started</div>
-    <p class="muted" id="emailStatus"></p>
-    <div class="row"><a class="btn" href="/settings">Alarm and email settings</a></div>
-  </section>
-</main>
 
 <script>
 const $ = id => document.getElementById(id);
-const H = [];
-let since = 0, busy = false;
+const H = [], HV = [];
+let since = 0, busy = false, armed = true;
 const TXT = {
   safe: ['All clear', 'Gas and vibration are both normal.'],
   warning: ['Gas is rising', 'The level is close to the alarm threshold.'],
-  error: ['Sensor problem', 'A sensor is not responding. See the message above.']
+  error: ['Sensor problem', 'A sensor is not responding. See the message above.'],
+  disarmed: ['Disarmed', 'Alarm, buzzer and email alerts are off. Readings are still shown.']
 };
 const fmt = sec => Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
 function list(ul, items) { ul.replaceChildren(...items.map(t => { const li = document.createElement('li'); li.textContent = t; return li; })); }
+function ago(s) {
+  s = Math.max(0, s);
+  return s < 60 ? Math.round(s) + ' s ago' : s < 3600 ? Math.floor(s / 60) + ' min ago' : Math.floor(s / 3600) + ' h ago';
+}
 
 function drawTrace(thr) {
   const w = 720, h = 230, n = H.length;
   if (!n) return;
   const x = i => (i + 240 - n) / 239 * w, y = g => h - g / 1023 * h;
-  let p = '', b = '';
-  H.forEach((q, i) => {
-    p += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(q.g).toFixed(1);
-    if (q.v) b += '<rect class="vb" x="' + x(i).toFixed(1) + '" y="0" width="' + (w / 239 + .5).toFixed(1) + '" height="' + h + '"/>';
-  });
-  $('trace').innerHTML = b
-    + '<path class="ar" d="' + p + 'L' + w + ' ' + h + 'L' + x(0).toFixed(1) + ' ' + h + 'Z"/>'
+  let p = '';
+  H.forEach((q, i) => { p += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(q.g).toFixed(1); });
+  $('trace').innerHTML =
+      '<path class="ar" d="' + p + 'L' + w + ' ' + h + 'L' + x(0).toFixed(1) + ' ' + h + 'Z"/>'
     + '<line class="th" x1="0" x2="' + w + '" y1="' + y(thr) + '" y2="' + y(thr) + '"/>'
+    + '<path class="ln" d="' + p + '"/>';
+}
+
+function drawVib() {
+  const w = 720, h = 120, n = HV.length;
+  if (!n) return;
+  const x = i => (i + 240 - n) / 239 * w, Y = v => v ? 12 : h - 4;
+  let p = 'M' + x(0).toFixed(1) + ' ' + Y(HV[0]);
+  for (let i = 1; i < n; i++) p += 'L' + x(i).toFixed(1) + ' ' + Y(HV[i - 1]) + 'L' + x(i).toFixed(1) + ' ' + Y(HV[i]);
+  $('vtrace').innerHTML =
+      '<path class="ar" d="' + p + 'L' + x(n - 1).toFixed(1) + ' ' + h + 'L' + x(0).toFixed(1) + ' ' + h + 'Z"/>'
     + '<path class="ln" d="' + p + '"/>';
 }
 
 function render(d) {
   document.body.dataset.s = d.status;
+  armed = d.armed !== false;
   let t, s;
   if (d.status === 'danger') {
     const g = d.reasons.some(r => r.indexOf('Gas') === 0);
@@ -87,6 +107,11 @@ function render(d) {
   } else { t = TXT[d.status][0]; s = TXT[d.status][1]; }
   $('verdict').textContent = t; $('sub').textContent = s;
   $('muteBtn').hidden = !(d.buzzer_on && !d.muted);
+
+  $('armBtn').disabled = false;
+  $('armBtn').textContent = armed ? 'Disarm' : 'Arm system';
+  $('armBtn').classList.toggle('fill', !armed);
+  $('armChip').classList.toggle('on', armed); $('armChip').textContent = armed ? 'Armed' : 'Disarmed';
 
   $('gasVal').textContent = d.gas === null ? '--' : d.gas;
   $('gasFill').style.width = (d.gas === null ? 0 : d.gas / 1023 * 100) + '%';
@@ -100,17 +125,19 @@ function render(d) {
       : d.clean_air == null ? 'not calibrated (type C in the ESP32 serial monitor)' : d.clean_air + ' of 1023 (raw ' + d.clean_air_raw + ' of 4095)';
   }
 
-  $('vibChip').classList.toggle('on', d.vibration); $('vibChip').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
+  $('vibDot').classList.toggle('on', d.vibration);
+  $('vibState').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
+  $('vibLast').textContent = d.last_vib ? ago(d.ts - d.last_vib) : 'none since the app started';
+
   $('bzChip').classList.toggle('on', d.buzzer_on); $('bzChip').textContent = 'Buzzer ' + (d.buzzer_on ? (d.muted ? 'muted' : 'on') : 'off');
   $('ledChip').classList.toggle('on', d.led_on); $('ledChip').textContent = 'LED ' + (d.led_on ? 'on' : 'off');
   $('errors').hidden = d.errors.length === 0; list($('errorList'), d.errors);
 
-  $('lastAlert').textContent = d.last_alert ? new Date(d.last_alert.ts * 1000).toLocaleTimeString() + ' - ' + d.last_alert.kind + ': ' + d.last_alert.message : 'None since the app started';
-  $('emailStatus').textContent = d.email_status + (d.last_email ? ' (' + new Date(d.last_email * 1000).toLocaleTimeString() + ')' : '');
-
-  for (const q of d.series) { if (q.gas !== null) H.push({ g: q.gas, v: q.vib }); since = Math.max(since, q.t); }
+  for (const q of d.series) { if (q.gas !== null) H.push({ g: q.gas }); HV.push(q.vib); since = Math.max(since, q.t); }
   while (H.length > 240) H.shift();
+  while (HV.length > 240) HV.shift();
   drawTrace(d.threshold);
+  drawVib();
 }
 
 async function poll() {
@@ -126,11 +153,13 @@ async function poll() {
   } finally { busy = false; }
 }
 
-$('muteBtn').onclick = async () => {
-  try { await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'mute' }) }); }
+async function control(action) {
+  try { await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }); }
   catch (e) { alert('Cannot reach the Raspberry Pi.'); }
   poll();
-};
+}
+$('muteBtn').onclick = () => control('mute');
+$('armBtn').onclick = () => { $('armBtn').disabled = true; control(armed ? 'disarm' : 'arm'); };
 poll(); setInterval(poll, 1000);
 </script>
 </body>
