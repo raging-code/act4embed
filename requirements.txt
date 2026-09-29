@@ -1,0 +1,2 @@
+flask>=3.0
+# gpiozero, lgpio and spidev come from apt on Raspberry Pi OS (see README.md)
