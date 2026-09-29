@@ -1,2 +1,4 @@
-flask>=3.0
-# gpiozero, lgpio and spidev come from apt on Raspberry Pi OS (see README.md)
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+# gpiozero and lgpio come from apt on Raspberry Pi OS (see README.md); spidev is no longer needed

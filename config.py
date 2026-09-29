@@ -52,3 +52,11 @@ EMAIL_COOLDOWN = 300          # at most one alert email every 5 minutes
 # ---------------- Web server ----------------
 HOST = "0.0.0.0"              # reachable from other devices on the network
 PORT = 5000
+
+# ---------------- ESP32 (the MQ-2 is wired to the ESP32, not to the Pi) ----------------
+# fastapi-esp32
+ESP32_ADC_MAX = 4095          # ESP32 ADC is 12-bit (0-4095). The dashboard rescales it to 0-1023.
+ESP32_TIMEOUT = 5             # seconds without a packet before the gas sensor is reported as failed
+ESP32_TOKEN = "act4embed"     # must equal API_KEY in the ESP32 sketch ("" turns the check off)
+# GAS_ADC_CHANNEL / SPI_DEVICE above are no longer used (there is no MCP3008 any more).
+# ADC_DIVIDER_RATIO is still used for the "Sensor voltage" number: keep the 10k + 20k divider.

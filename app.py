@@ -1,5 +1,5 @@
 """
-Gas & Vibration Monitoring Dashboard - Raspberry Pi 5 + Flask
+Gas & Vibration Monitoring Dashboard - Raspberry Pi 5 + FastAPI (MQ-2 read by an ESP32)
 Run:  python app.py      then open  http://<pi-ip>:5000
 """
 import atexit
@@ -20,13 +20,19 @@ from contextlib import closing
 from datetime import datetime
 from email.message import EmailMessage
 
-from flask import Flask, Response, jsonify, render_template, request
+import hmac
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 import config
 
 # gpiozero works on the Pi 5 (RPi.GPIO does NOT). It uses the lgpio backend.
 try:
-    from gpiozero import LED, MCP3008, Buzzer, DigitalInputDevice
+    from gpiozero import LED, Buzzer, DigitalInputDevice
     GPIO_AVAILABLE = True
 except Exception:
     GPIO_AVAILABLE = False
@@ -148,6 +154,49 @@ def init_db():
         c.commit()
 
 
+# ----------------------------------------------------------------- esp32 input
+# fastapi-esp32: the MQ-2 is wired to an ESP32 (12-bit ADC). The ESP32 POSTs its reading to
+# /api/esp32 every second; the sensor loop below reads the newest value from here.
+esp_lock = threading.Lock()
+esp32 = {"adc": None, "ts": 0.0, "clean_air": None, "calibrating": False,
+         "boot_ts": None, "ip": None, "rssi": None}
+
+
+def esp32_fresh(now=None):
+    """True if the ESP32 sent a reading within the last ESP32_TIMEOUT seconds."""
+    now = time.time() if now is None else now
+    with esp_lock:
+        return esp32["adc"] is not None and (now - esp32["ts"]) <= config.ESP32_TIMEOUT
+
+
+def warmup_left(now):
+    """Seconds of MQ-2 warm-up left. The heater starts when the ESP32 powers up, so
+    this follows the ESP32 uptime. Before the first packet it uses the app start."""
+    with esp_lock:
+        boot = esp32["boot_ts"]
+    ref = boot if boot is not None else START_TIME
+    return max(0.0, config.WARMUP_SECONDS - (now - ref))
+
+
+def esp32_snapshot():
+    """Extra fields for /data (the Live page shows them)."""
+    now = time.time()
+    with esp_lock:
+        e = dict(esp32)
+    fresh = e["adc"] is not None and (now - e["ts"]) <= config.ESP32_TIMEOUT
+    ca = e["clean_air"]
+    return {
+        "gas_source": "esp32" if fresh else ("simulated" if SIMULATION else "none"),
+        "gas_raw": e["adc"] if fresh else None,
+        "clean_air_raw": None if ca is None else round(ca, 1),
+        "clean_air": None if ca is None else int(round(ca * 1023 / config.ESP32_ADC_MAX)),
+        "esp32_calibrating": bool(e["calibrating"]) if fresh else False,
+        "esp32_ip": e["ip"],
+        "esp32_age": round(now - e["ts"], 1) if e["ts"] else None,
+        "esp32_rssi": e["rssi"],
+    }
+
+
 # ----------------------------------------------------------------- hardware
 class Hardware:
     """Wraps real GPIO devices, or fakes them in simulation mode.
@@ -161,8 +210,7 @@ class Hardware:
         self.sim_gas_until = 0.0
         if SIMULATION:
             return
-        self._init("gas", lambda: MCP3008(channel=config.GAS_ADC_CHANNEL,
-                                          device=config.SPI_DEVICE))
+        # gas: read by the ESP32 (see esp32 input section), no ADC on the Pi
         self._init("vib", lambda: DigitalInputDevice(
             config.VIB_PIN, pull_up=not config.VIB_ACTIVE_HIGH))
         self._init("led", lambda: LED(config.LED_PIN))
@@ -179,21 +227,25 @@ class Hardware:
             print(f"[hardware] {name} failed to initialise: {self.errors[name]}")
 
     def read_gas(self):
-        """Return the MQ-2 value as 0-1023 (average of 5 reads to reduce noise)."""
-        if SIMULATION:
-            t = time.time()
-            v = 180 + 25 * math.sin(t / 7) + random.uniform(-8, 8)
-            if t < self.sim_gas_until:
+        """Return the MQ-2 value as 0-1023, rescaled from the ESP32's 12-bit reading
+        (the ESP32 already averages many samples per second)."""
+        now = time.time()
+        with esp_lock:
+            raw, ts = esp32["adc"], esp32["ts"]
+        if raw is not None and (now - ts) <= config.ESP32_TIMEOUT:
+            v = raw * 1023 / config.ESP32_ADC_MAX
+            if SIMULATION and now < self.sim_gas_until:
+                v += 450                # "Simulate gas leak" test button
+            return int(round(max(0, min(1023, v))))
+        if SIMULATION:                  # no ESP32 yet: fake data so the site can be tested
+            v = 180 + 25 * math.sin(now / 7) + random.uniform(-8, 8)
+            if now < self.sim_gas_until:
                 v += 450
             return int(max(0, min(1023, v)))
-        if self.gas is None:
-            raise RuntimeError(self.errors.get("gas", "ADC not initialised") +
-                               " (is SPI enabled? check wiring)")
-        total = 0.0
-        for _ in range(5):
-            total += self.gas.value
-            time.sleep(0.005)
-        return int(round(total / 5 * 1023))
+        if raw is None:
+            raise RuntimeError("No data from the ESP32 yet (is it powered, on the same Wi-Fi, "
+                               "and is SERVER_URL in the sketch this computer's IP?)")
+        raise RuntimeError(f"ESP32 silent for {int(now - ts)} s (check its power and Wi-Fi)")
 
     def read_vib(self):
         if SIMULATION:
@@ -322,7 +374,7 @@ def sensor_loop():
             # ---- decide alarm + outputs
             with lock:
                 thr = settings["threshold"]
-                warm = max(0.0, config.WARMUP_SECONDS - (now - START_TIME))
+                warm = warmup_left(now)
                 gas_alarm = gas is not None and warm == 0 and gas > thr
                 gas_warn = gas is not None and warm == 0 and gas > thr * 0.7
                 alarm = gas_alarm or vibration
@@ -394,39 +446,102 @@ def sensor_loop():
         time.sleep(config.SAMPLE_INTERVAL)
 
 
-# ----------------------------------------------------------------- web app
-app = Flask(__name__)
+# ----------------------------------------------------------------- web app (FastAPI)
+@asynccontextmanager
+async def lifespan(_app):
+    init_db()
+    threading.Thread(target=sensor_loop, daemon=True).start()
+    yield
 
 
-@app.route("/")
-def index():
-    return render_template("index.html", sim=SIMULATION, warmup_total=config.WARMUP_SECONDS)
+app = FastAPI(title="Gas & Vibration Monitor", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
-@app.route("/history")
-def history_page():
-    return render_template("history.html", sim=SIMULATION)
-
-
-@app.route("/data")
-def data():
+async def get_json(request):
+    """Body as a dict, or {} if it is missing or not a JSON object."""
     try:
-        since = float(request.args.get("since", 0))
+        d = await request.json()
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def bad(message, code=400):
+    return JSONResponse({"ok": False, "error": message}, status_code=code)
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def index(request: Request):
+    return templates.TemplateResponse(
+        request, "index.html", {"sim": SIMULATION, "warmup_total": config.WARMUP_SECONDS})
+
+
+@app.get("/history", response_class=HTMLResponse, include_in_schema=False)
+def history_page(request: Request):
+    return templates.TemplateResponse(request, "history.html", {"sim": SIMULATION})
+
+
+@app.get("/settings", response_class=HTMLResponse, include_in_schema=False)
+def settings_page(request: Request):
+    return templates.TemplateResponse(request, "settings.html", {"sim": SIMULATION})
+
+
+@app.get("/data")
+def data(since: str = "0"):
+    try:
+        since_ts = float(since)
     except ValueError:
-        since = 0.0
+        since_ts = 0.0
     with lock:
         out = dict(state)
-        out["series"] = [p for p in series if p["t"] > since]
-    return jsonify(out)
+        out["series"] = [p for p in series if p["t"] > since_ts]
+    out.update(esp32_snapshot())
+    return JSONResponse(out)
+
+
+@app.post("/api/esp32")
+async def api_esp32(request: Request):
+    """Called by the ESP32 sketch once per second."""
+    if config.ESP32_TOKEN:
+        key = request.headers.get("x-api-key", "")
+        if not hmac.compare_digest(key.encode("utf-8"), config.ESP32_TOKEN.encode("utf-8")):
+            return bad("missing or wrong X-API-Key (API_KEY in the sketch must equal ESP32_TOKEN in config.py)", 401)
+    d = await get_json(request)
+    try:
+        adc = int(round(float(d.get("adc"))))
+    except (TypeError, ValueError, OverflowError):
+        return bad("adc must be a number")
+    if not 0 <= adc <= config.ESP32_ADC_MAX:
+        return bad(f"adc must be 0-{config.ESP32_ADC_MAX}")
+
+    def num(key, lo, hi):
+        try:
+            v = float(d.get(key))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return v if lo <= v <= hi else None
+
+    now = time.time()
+    clean = num("clean_air", 0, config.ESP32_ADC_MAX)
+    uptime = num("uptime_s", 0, 10 ** 9)
+    rssi = num("rssi", -120, 0)
+    with esp_lock:
+        esp32.update(adc=adc, ts=now, clean_air=clean, calibrating=bool(d.get("calibrating")),
+                     boot_ts=None if uptime is None else now - uptime,
+                     ip=request.client.host if request.client else None,
+                     rssi=None if rssi is None else int(rssi))
+    return JSONResponse({"ok": True})
 
 
 @app.post("/control")
-def control():
-    d = request.get_json(silent=True) or {}
+async def control(request: Request):
+    d = await get_json(request)
     action, value = d.get("action"), d.get("value")
     if action in ("buzzer", "led"):
         if value not in ("auto", "on", "off"):
-            return jsonify(ok=False, error="value must be auto, on or off"), 400
+            return bad("value must be auto, on or off")
         with lock:
             ctrl[action] = value
     elif action == "mute":
@@ -439,15 +554,15 @@ def control():
         try:
             t = int(value)
         except (TypeError, ValueError):
-            return jsonify(ok=False, error="threshold must be a number"), 400
+            return bad("threshold must be a number")
         if not 1 <= t <= 1023:
-            return jsonify(ok=False, error="threshold must be 1-1023"), 400
+            return bad("threshold must be 1-1023")
         with lock:
             settings["threshold"] = t
         save_settings()
     elif action == "test_email":
         if not config.EMAIL_ENABLED:
-            return jsonify(ok=False, error="Turn on email alerts in Settings first"), 400
+            return bad("Turn on email alerts in Settings first")
         threading.Thread(target=send_email, args=(
             "Test email from Gas & Vibration Monitor",
             "If you can read this, email alerts work."), daemon=True).start()
@@ -456,27 +571,28 @@ def control():
     elif action == "sim_vibration" and SIMULATION:
         hw.vib_event = time.time()
     else:
-        return jsonify(ok=False, error="unknown action"), 400
-    return jsonify(ok=True)
+        return bad("unknown action")
+    return JSONResponse({"ok": True})
 
 
-def resolve_range():
+def resolve_range(request):
     """Return (start, end) epoch seconds from ?range=<sec|all> or ?start=&end="""
+    q = request.query_params
     now = int(time.time())
-    rng = request.args.get("range")
+    rng = q.get("range")
     try:
         if rng == "all":
             return 0, now + 60
         if rng:
             return now - int(rng), now + 60
-        return int(request.args.get("start", 0)), int(request.args.get("end", now + 60))
+        return int(q.get("start", 0)), int(q.get("end", now + 60))
     except ValueError:
         return now - 3600, now + 60
 
 
-@app.route("/api/history")
-def api_history():
-    start, end = resolve_range()
+@app.get("/api/history")
+def api_history(request: Request):
+    start, end = resolve_range(request)
     if start <= 0:
         r = db_query("SELECT MIN(ts) AS m FROM readings WHERE ts < ?", (end,))
         start = r[0]["m"] or end
@@ -494,12 +610,13 @@ def api_history():
     stats = db_query(
         "SELECT COUNT(*) AS n, MAX(gas) AS max_gas, ROUND(AVG(gas)) AS avg_gas, "
         "SUM(vib) AS vib_samples FROM readings WHERE ts >= ? AND ts < ?", (start, end))[0]
-    return jsonify(chart=chart, rows=rows, alerts=alerts, stats=stats, threshold=settings["threshold"])
+    return JSONResponse({"chart": chart, "rows": rows, "alerts": alerts, "stats": stats,
+                         "threshold": settings["threshold"]})
 
 
-@app.route("/export.csv")
-def export_csv():
-    start, end = resolve_range()
+@app.get("/export.csv")
+def export_csv(request: Request):
+    start, end = resolve_range(request)
     rows = db_query("SELECT ts, gas, vib, status FROM readings WHERE ts >= ? AND ts < ? "
                     "ORDER BY ts", (start, end))
     buf = io.StringIO()
@@ -508,27 +625,22 @@ def export_csv():
     for r in rows:
         w.writerow([datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d %H:%M:%S"),
                     r["gas"], r["vib"], r["status"]])
-    return Response(buf.getvalue(), mimetype="text/csv", headers={
+    return Response(buf.getvalue(), media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=sensor_log.csv"})
-
-
-@app.route("/settings")
-def settings_page():
-    return render_template("settings.html", sim=SIMULATION)
 
 
 @app.get("/api/email")
 def api_email_get():
     def shown(v):
         return "" if v in PLACEHOLDER_EMAILS else v
-    return jsonify(enabled=bool(config.EMAIL_ENABLED), user=shown(config.SMTP_USER),
-                   to=shown(config.EMAIL_TO), host=config.SMTP_HOST, port=config.SMTP_PORT,
-                   has_password=bool(config.SMTP_PASSWORD))
+    return JSONResponse({"enabled": bool(config.EMAIL_ENABLED), "user": shown(config.SMTP_USER),
+                         "to": shown(config.EMAIL_TO), "host": config.SMTP_HOST,
+                         "port": config.SMTP_PORT, "has_password": bool(config.SMTP_PASSWORD)})
 
 
 @app.post("/api/email")
-def api_email_set():
-    d = request.get_json(silent=True) or {}
+async def api_email_set(request: Request):
+    d = await get_json(request)
     enabled = bool(d.get("enabled"))
     user, to = str(d.get("user") or "").strip(), str(d.get("to") or "").strip()
     host = str(d.get("host") or "").strip() or config.SMTP_HOST
@@ -536,18 +648,18 @@ def api_email_set():
     try:
         port = int(d.get("port") or config.SMTP_PORT)
     except (TypeError, ValueError):
-        return jsonify(ok=False, error="The SMTP port must be a number"), 400
+        return bad("The SMTP port must be a number")
     if not 1 <= port <= 65535:
-        return jsonify(ok=False, error="The SMTP port must be between 1 and 65535"), 400
+        return bad("The SMTP port must be between 1 and 65535")
     ok_mail = lambda s: bool(_re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s))
     if user and not ok_mail(user):
-        return jsonify(ok=False, error="Enter a valid address to send alerts from"), 400
+        return bad("Enter a valid address to send alerts from")
     if to and not ok_mail(to):
-        return jsonify(ok=False, error="Enter a valid address to send alerts to"), 400
+        return bad("Enter a valid address to send alerts to")
     if enabled and not (user and to):
-        return jsonify(ok=False, error="Enter both email addresses to turn email alerts on"), 400
+        return bad("Enter both email addresses to turn email alerts on")
     if enabled and not (password or config.SMTP_PASSWORD):
-        return jsonify(ok=False, error="Enter the app password to turn email alerts on"), 400
+        return bad("Enter the app password to turn email alerts on")
     with lock:
         email_file.update(enabled=enabled, user=user, to=to, host=host, port=port)
         if password:
@@ -556,7 +668,7 @@ def api_email_set():
         state["email_enabled"] = config.EMAIL_ENABLED
         state["email_status"] = "Email alerts are on" if enabled else "Email alerts are off"
     save_email_settings()
-    return jsonify(ok=True)
+    return JSONResponse({"ok": True})
 
 
 def local_ip():
@@ -569,13 +681,13 @@ def local_ip():
 
 
 if __name__ == "__main__":
-    init_db()
-    threading.Thread(target=sensor_loop, daemon=True).start()
+    import uvicorn
     print("=" * 60)
-    print("Mode:", "SIMULATION (fake data)" if SIMULATION else "REAL SENSORS")
+    print("Mode:", "SIMULATION (Pi outputs faked)" if SIMULATION else "REAL SENSORS")
+    print("Gas sensor: MQ-2 on the ESP32 -> POST http://<this-ip>:%d/api/esp32" % config.PORT)
     print(f"Open on this device : http://localhost:{config.PORT}")
     print(f"Open from other PCs : http://{local_ip()}:{config.PORT}")
     print("=" * 60)
-    # debug/reloader MUST stay off: the reloader starts a 2nd process that would
-    # try to claim the same GPIO pins and crash ("GPIO busy").
-    app.run(host=config.HOST, port=config.PORT, debug=False, use_reloader=False, threaded=True)
+    # Run ONE process, no reload: a 2nd process would try to claim the same GPIO pins
+    # ("GPIO busy") and would have its own copy of the ESP32 readings.
+    uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info", access_log=False)

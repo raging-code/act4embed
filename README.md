@@ -71,3 +71,24 @@ Data is stored in `data/sensor.db` (SQLite). Delete the `data` folder to start f
 | Page does not open from PC | Same network? Use the Pi IP, port 5000, `http://` not https |
 | Email failed | Use an App Password; check EMAIL_ENABLED, SMTP_USER, internet |
 | MQ-2 reads high at first | Normal. It needs a warm-up (allow several minutes for stable readings) |
+
+## ESP32 + FastAPI (replaces the MCP3008 and Flask)
+The server is now FastAPI (uvicorn); `python app.py` still starts it. Sections 1 and the MCP3008 rows of
+section 4 above no longer apply: there is no ADC on the Pi and SPI does not need to be enabled.
+The MQ-2 is wired to an ESP32 (sketch: mq2_esp32.ino), which sends its reading over Wi-Fi to
+`POST /api/esp32` once a second.
+
+    pip install -r requirements.txt        # fastapi, uvicorn, jinja2
+    python app.py
+
+ESP32 wiring (use an ADC1 pin: GPIO34. ADC2 pins do not work while Wi-Fi is on):
+| MQ-2 module | Connect to |
+|---|---|
+| VCC | ESP32 VIN / 5V pin (USB powered) |
+| GND | ESP32 GND (must be common) |
+| AO | 10k resistor -> junction -> ESP32 GPIO34; junction -> 20k (two 10k in series) -> GND |
+Optional: 100 nF capacitor from GPIO34 to GND for a steadier reading.
+
+In the sketch set WIFI_SSID, WIFI_PASS, SERVER_URL (`http://<pi-ip>:5000/api/esp32`, IP from `hostname -I`) and make
+API_KEY equal to ESP32_TOKEN in config.py. In the Arduino serial monitor (115200 baud) type C to record
+30 s of clean air; the mean becomes the clean-air baseline shown on the dashboard.

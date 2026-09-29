@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gas & Vibration Monitor</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body data-s="warmup">
 <header>
@@ -14,7 +14,7 @@
   {% if sim %}<span class="demo">Simulation mode</span>{% endif %}
 </header>
 <main>
-  {% if sim %}<div class="banner">Simulation mode: the numbers are fake. Use the test buttons in Settings.</div>{% endif %}
+  {% if sim %}<div class="banner">Simulation mode: vibration, LED and buzzer are simulated. The gas value comes from the ESP32 when it is connected, otherwise it is fake. Use the test buttons in Settings.</div>{% endif %}
   <div id="errors" class="banner" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
 
   <section aria-live="polite">
@@ -30,6 +30,8 @@
       <div class="bar" aria-hidden="true"><i id="gasFill" style="width:0"></i><b id="gasTick"></b></div>
       <div class="bar-note"><span>0</span><span>Alarm at <b id="tickVal">--</b></span><span>1023</span></div>
       <p class="muted">Sensor voltage: <span id="gasVolt">--</span> V</p>
+      <p class="muted">Source: <span id="gasSrc">--</span> &middot; raw ADC <span id="gasRaw">--</span> of 4095</p>
+      <p class="muted">Clean air baseline: <span id="cleanAir">--</span></p>
       <div class="chips"><span class="chip" id="vibChip">No vibration</span><span class="chip" id="bzChip">Buzzer off</span><span class="chip" id="ledChip">LED off</span></div>
     </div>
     <div class="card">
@@ -91,6 +93,12 @@ function render(d) {
   $('gasTick').style.left = 'calc(' + d.threshold / 1023 * 100 + '% - 1px)';
   $('tickVal').textContent = d.threshold;
   $('gasVolt').textContent = d.gas_voltage === null ? '--' : d.gas_voltage;
+  if ($('gasSrc')) {
+    $('gasSrc').textContent = d.gas_source === 'esp32' ? 'ESP32' + (d.esp32_ip ? ' (' + d.esp32_ip + ')' : '') : d.gas_source === 'simulated' ? 'simulated' : 'no ESP32 data';
+    $('gasRaw').textContent = d.gas_raw == null ? '--' : d.gas_raw;
+    $('cleanAir').textContent = d.esp32_calibrating ? 'calibrating (30 s), keep the sensor in clean air...'
+      : d.clean_air == null ? 'not calibrated (type C in the ESP32 serial monitor)' : d.clean_air + ' of 1023 (raw ' + d.clean_air_raw + ' of 4095)';
+  }
 
   $('vibChip').classList.toggle('on', d.vibration); $('vibChip').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
   $('bzChip').classList.toggle('on', d.buzzer_on); $('bzChip').textContent = 'Buzzer ' + (d.buzzer_on ? (d.muted ? 'muted' : 'on') : 'off');
