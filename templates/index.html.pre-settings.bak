@@ -10,17 +10,16 @@
 <body data-s="warmup">
 <header>
   <span class="brand">Gas & Vibration Monitor</span>
-  <nav aria-label="Pages"><a href="/" aria-current="page">Live</a><a href="/history">History</a><a href="/settings">Settings</a></nav>
+  <nav aria-label="Pages"><a href="/" aria-current="page">Live</a><a href="/history">History</a></nav>
   {% if sim %}<span class="demo">Simulation mode</span>{% endif %}
 </header>
 <main>
-  {% if sim %}<div class="banner">Simulation mode: the numbers are fake. Use the test buttons in Settings.</div>{% endif %}
+  {% if sim %}<div class="banner">Simulation mode: the numbers are fake. Use the test buttons below.</div>{% endif %}
   <div id="errors" class="banner" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
 
   <section aria-live="polite">
     <h1 class="verdict" id="verdict">Connecting</h1>
     <p class="sub" id="sub">Waiting for the Raspberry Pi.</p>
-    <div class="row"><button class="btn fill" id="muteBtn" hidden>Mute alarm</button></div>
   </section>
 
   <section class="row2">
@@ -38,11 +37,37 @@
     </div>
   </section>
 
+  <section class="card dock">
+    <div>
+      <label for="thrRange">Gas alarm threshold</label>
+      <input id="thrRange" type="range" min="1" max="1023" step="1" value="400">
+      <div class="row"><input id="thrNum" type="number" min="1" max="1023" aria-label="Threshold value"><button class="btn" id="thrSave">Save threshold</button></div>
+    </div>
+    <div>
+      <span class="lbl">Buzzer</span>
+      <div class="seg"><button data-a="buzzer" data-v="auto">Auto</button><button data-a="buzzer" data-v="on">On</button><button data-a="buzzer" data-v="off">Off</button></div>
+      <span class="lbl" style="margin-top:16px">LED</span>
+      <div class="seg"><button data-a="led" data-v="auto">Auto</button><button data-a="led" data-v="on">On</button><button data-a="led" data-v="off">Off</button></div>
+    </div>
+    <div>
+      <span class="lbl">Alarm</span>
+      <div class="row" style="margin-top:0"><button class="btn fill" id="muteBtn">Mute alarm</button><button class="btn" id="resetBtn">Reset to auto</button></div>
+      <p class="muted" id="mutedNote" hidden>Buzzer muted until the alarm ends.</p>
+      <p class="muted">Auto: the buzzer sounds on gas over the threshold or vibration; the LED lights on vibration.</p>
+    </div>
+    {% if sim %}
+    <div>
+      <span class="lbl">Simulation tests</span>
+      <div class="row" style="margin-top:0"><button class="btn" id="simGas">Simulate gas leak (10 s)</button><button class="btn" id="simVib">Simulate vibration</button></div>
+    </div>
+    {% endif %}
+  </section>
+
   <section class="card">
     <span class="lbl">Last alert</span>
     <div id="lastAlert">None since the app started</div>
     <p class="muted" id="emailStatus"></p>
-    <div class="row"><a class="btn" href="/settings">Alarm and email settings</a></div>
+    <div class="row"><button class="btn" id="testEmail">Send test email</button></div>
   </section>
 </main>
 
@@ -84,7 +109,6 @@ function render(d) {
     t = 'Warming up'; s = 'Gas alarms are off for ' + fmt(d.warmup_left) + ' while the MQ-2 heats up.';
   } else { t = TXT[d.status][0]; s = TXT[d.status][1]; }
   $('verdict').textContent = t; $('sub').textContent = s;
-  $('muteBtn').hidden = !(d.buzzer_on && !d.muted);
 
   $('gasVal').textContent = d.gas === null ? '--' : d.gas;
   $('gasFill').style.width = (d.gas === null ? 0 : d.gas / 1023 * 100) + '%';
@@ -93,10 +117,14 @@ function render(d) {
   $('gasVolt').textContent = d.gas_voltage === null ? '--' : d.gas_voltage;
 
   $('vibChip').classList.toggle('on', d.vibration); $('vibChip').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
-  $('bzChip').classList.toggle('on', d.buzzer_on); $('bzChip').textContent = 'Buzzer ' + (d.buzzer_on ? (d.muted ? 'muted' : 'on') : 'off');
-  $('ledChip').classList.toggle('on', d.led_on); $('ledChip').textContent = 'LED ' + (d.led_on ? 'on' : 'off');
+  $('bzChip').classList.toggle('on', d.buzzer_on); $('bzChip').textContent = 'Buzzer ' + (d.buzzer_on ? (d.muted ? 'muted' : 'on') : 'off') + ' (' + d.buzzer_mode + ')';
+  $('ledChip').classList.toggle('on', d.led_on); $('ledChip').textContent = 'LED ' + (d.led_on ? 'on' : 'off') + ' (' + d.led_mode + ')';
+  $('mutedNote').hidden = !d.muted;
+  document.querySelectorAll('[data-a=buzzer]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.buzzer_mode));
+  document.querySelectorAll('[data-a=led]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.led_mode));
   $('errors').hidden = d.errors.length === 0; list($('errorList'), d.errors);
 
+  if (document.activeElement !== $('thrRange') && document.activeElement !== $('thrNum')) { $('thrRange').value = d.threshold; $('thrNum').value = d.threshold; }
   $('lastAlert').textContent = d.last_alert ? new Date(d.last_alert.ts * 1000).toLocaleTimeString() + ' - ' + d.last_alert.kind + ': ' + d.last_alert.message : 'None since the app started';
   $('emailStatus').textContent = d.email_status + (d.last_email ? ' (' + new Date(d.last_email * 1000).toLocaleTimeString() + ')' : '');
 
@@ -118,11 +146,23 @@ async function poll() {
   } finally { busy = false; }
 }
 
-$('muteBtn').onclick = async () => {
-  try { await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'mute' }) }); }
-  catch (e) { alert('Cannot reach the Raspberry Pi.'); }
+async function send(action, value) {
+  try {
+    const r = await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, value }) });
+    const j = await r.json(); if (!j.ok) alert(j.error || 'Command failed');
+  } catch (e) { alert('Cannot reach the Raspberry Pi.'); }
   poll();
-};
+}
+
+document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => send(b.dataset.a, b.dataset.v));
+$('muteBtn').onclick = () => send('mute'); $('resetBtn').onclick = () => send('reset');
+$('testEmail').onclick = () => send('test_email');
+$('thrRange').oninput = () => $('thrNum').value = $('thrRange').value;
+$('thrNum').oninput = () => $('thrRange').value = $('thrNum').value;
+$('thrRange').onchange = () => send('threshold', $('thrRange').value);
+$('thrSave').onclick = () => send('threshold', $('thrNum').value);
+if ($('simGas')) { $('simGas').onclick = () => send('sim_gas'); $('simVib').onclick = () => send('sim_vibration'); }
+
 poll(); setInterval(poll, 1000);
 </script>
 </body>

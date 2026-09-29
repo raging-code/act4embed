@@ -74,46 +74,6 @@ def save_settings():
 
 settings = load_settings()
 
-# ambient-settings: email settings that can be edited from the Settings page
-import re as _re
-
-EMAIL_PATH = os.path.join(DATA_DIR, "email.json")
-PLACEHOLDER_EMAILS = ("your_email@gmail.com", "receiver@example.com")
-email_file = {}     # only what the user saved from the web page
-
-
-def apply_email():
-    """Copy the saved email settings onto the config module the rest of app.py reads."""
-    if "enabled" in email_file:
-        config.EMAIL_ENABLED = bool(email_file["enabled"])
-    for key, attr in (("user", "SMTP_USER"), ("password", "SMTP_PASSWORD"),
-                      ("to", "EMAIL_TO"), ("host", "SMTP_HOST")):
-        if email_file.get(key):
-            setattr(config, attr, str(email_file[key]))
-    if email_file.get("port"):
-        config.SMTP_PORT = int(email_file["port"])
-
-
-def load_email_settings():
-    try:
-        with open(EMAIL_PATH) as f:
-            email_file.update(json.load(f))
-        apply_email()
-    except (OSError, ValueError, TypeError):
-        pass
-
-
-def save_email_settings():
-    try:
-        with open(EMAIL_PATH, "w") as f:
-            json.dump(email_file, f)
-        os.chmod(EMAIL_PATH, 0o600)      # the app password is stored here
-    except OSError as e:
-        print("Could not save email settings:", e)
-
-
-load_email_settings()
-
 
 # ----------------------------------------------------------------- database
 def db_exec(sql, args=()):
@@ -447,7 +407,7 @@ def control():
         save_settings()
     elif action == "test_email":
         if not config.EMAIL_ENABLED:
-            return jsonify(ok=False, error="Turn on email alerts in Settings first"), 400
+            return jsonify(ok=False, error="Set EMAIL_ENABLED = True in config.py"), 400
         threading.Thread(target=send_email, args=(
             "Test email from Gas & Vibration Monitor",
             "If you can read this, email alerts work."), daemon=True).start()
@@ -510,53 +470,6 @@ def export_csv():
                     r["gas"], r["vib"], r["status"]])
     return Response(buf.getvalue(), mimetype="text/csv", headers={
         "Content-Disposition": "attachment; filename=sensor_log.csv"})
-
-
-@app.route("/settings")
-def settings_page():
-    return render_template("settings.html", sim=SIMULATION)
-
-
-@app.get("/api/email")
-def api_email_get():
-    def shown(v):
-        return "" if v in PLACEHOLDER_EMAILS else v
-    return jsonify(enabled=bool(config.EMAIL_ENABLED), user=shown(config.SMTP_USER),
-                   to=shown(config.EMAIL_TO), host=config.SMTP_HOST, port=config.SMTP_PORT,
-                   has_password=bool(config.SMTP_PASSWORD))
-
-
-@app.post("/api/email")
-def api_email_set():
-    d = request.get_json(silent=True) or {}
-    enabled = bool(d.get("enabled"))
-    user, to = str(d.get("user") or "").strip(), str(d.get("to") or "").strip()
-    host = str(d.get("host") or "").strip() or config.SMTP_HOST
-    password = str(d.get("password") or "")
-    try:
-        port = int(d.get("port") or config.SMTP_PORT)
-    except (TypeError, ValueError):
-        return jsonify(ok=False, error="The SMTP port must be a number"), 400
-    if not 1 <= port <= 65535:
-        return jsonify(ok=False, error="The SMTP port must be between 1 and 65535"), 400
-    ok_mail = lambda s: bool(_re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s))
-    if user and not ok_mail(user):
-        return jsonify(ok=False, error="Enter a valid address to send alerts from"), 400
-    if to and not ok_mail(to):
-        return jsonify(ok=False, error="Enter a valid address to send alerts to"), 400
-    if enabled and not (user and to):
-        return jsonify(ok=False, error="Enter both email addresses to turn email alerts on"), 400
-    if enabled and not (password or config.SMTP_PASSWORD):
-        return jsonify(ok=False, error="Enter the app password to turn email alerts on"), 400
-    with lock:
-        email_file.update(enabled=enabled, user=user, to=to, host=host, port=port)
-        if password:
-            email_file["password"] = password
-        apply_email()
-        state["email_enabled"] = config.EMAIL_ENABLED
-        state["email_status"] = "Email alerts are on" if enabled else "Email alerts are off"
-    save_email_settings()
-    return jsonify(ok=True)
 
 
 def local_ip():

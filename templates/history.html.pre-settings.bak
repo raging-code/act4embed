@@ -10,7 +10,7 @@
 <body data-s="safe">
 <header>
   <span class="brand">Gas & Vibration Monitor</span>
-  <nav aria-label="Pages"><a href="/">Live</a><a href="/history" aria-current="page">History</a><a href="/settings">Settings</a></nav>
+  <nav aria-label="Pages"><a href="/">Live</a><a href="/history" aria-current="page">History</a></nav>
   {% if sim %}<span class="demo">Simulation mode</span>{% endif %}
 </header>
 <main>

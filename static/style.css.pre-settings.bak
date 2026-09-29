@@ -64,18 +64,3 @@ th{position:sticky;top:0;background:var(--bg);font-weight:600}
 h2{font-size:1rem;font-weight:600;opacity:.85;margin:0 0 12px}
 @media(max-width:800px){.row2,.two{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}body[data-s=danger]{animation:none}}
-
-/* ambient-settings */
-.stack{display:grid;gap:20px}
-.form{max-width:560px}
-.field{display:grid;gap:6px;margin:0 0 18px}
-.field label{margin:0}
-.field input{width:100%;font:inherit;padding:11px 14px;border-radius:12px;border:1px solid var(--edge);background:rgba(0,0,0,.22);color:inherit}
-.field input::placeholder{color:inherit;opacity:.5}
-.field .hint,.hint{font-size:.92rem;opacity:.7}
-.check{display:flex;align-items:center;gap:12px;font-weight:600;cursor:pointer;margin:0 0 20px}
-.check input{width:22px;height:22px;accent-color:var(--ink)}
-details{margin:0 0 20px}
-summary{cursor:pointer;font-weight:600;padding:4px 0}
-details .field{margin-top:14px}
-.msg{min-height:1.5em;margin:14px 0 0;font-weight:600}
