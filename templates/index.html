@@ -63,6 +63,15 @@
   </section>
 </main>
 
+<div class="alarm" id="alarm" role="alertdialog" aria-modal="true" aria-labelledby="aTitle" hidden>
+  <div class="acard">
+    <svg class="aic" id="aIcon" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
+    <h2 id="aTitle">Gas detected</h2>
+    <div class="avals" id="aVals"></div>
+    <button class="areset" id="aReset">Reset alarm</button>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const S = [];                     // every sample: { t: time, g: gas or null, v: vibration 0/1 }
@@ -272,14 +281,17 @@ function render(d) {
   thr = d.threshold;
   let t, s;
   if (d.status === 'danger') {
-    const g = d.reasons.some(r => r.indexOf('Gas') === 0);
-    t = g && d.vibration ? 'Gas and vibration' : g ? 'Gas alarm' : 'Vibration';
+    const g = !!d.gas_alarm, v = !!d.vib_alarm;
+    t = g && v ? 'Gas and vibration' : g ? 'Gas alarm' : 'Vibration';
     s = d.reasons.join('. ') + '.' + (d.buzzer_on && !d.muted ? ' Buzzer sounding.' : '');
+  } else if (d.status === 'warning' && d.gas !== null && d.gas > d.threshold) {
+    t = 'Gas is still high'; s = 'The alarm was reset, but the level is still above the threshold.';
   } else if (d.status === 'warmup') {
     t = 'Warming up'; s = 'Gas alarms are off for ' + fmt(d.warmup_left) + ' while the MQ-2 heats up.';
   } else { t = TXT[d.status][0]; s = TXT[d.status][1]; }
   $('verdict').textContent = t; $('sub').textContent = s;
   $('muteBtn').hidden = !(d.buzzer_on && !d.muted);
+  alarmUI(d);
 
   const ab = $('armBtn');
   ab.disabled = false;
@@ -325,6 +337,41 @@ async function control(action) {
   catch (e) { alert('Cannot reach the Raspberry Pi.'); }
   poll();
 }
+/* ---------- alarm pop-up ---------- */
+const AIC = {
+  gas: '<path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"/>',
+  vib: '<path d="M3 12h4l3 8l4 -16l3 8h4"/>',
+  both: '<path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/>'
+};
+const ATT = { gas: 'Gas detected', vib: 'Vibration detected', both: 'Gas and vibration detected' };
+let aKey = '';
+function alarmUI(d) {
+  const g = !!d.gas_alarm, v = !!d.vib_alarm, on = d.status === 'danger' && (g || v), box = $('alarm');
+  if (!on) {
+    if (!box.hidden) {
+      box.hidden = true; document.body.classList.remove('alarming');
+      document.querySelectorAll('header,main').forEach(e => { e.inert = false; });
+    }
+    aKey = ''; return;
+  }
+  const cell = (l, val, sub) => '<div><span class="al">' + l + '</span><b>' + val + '</b><span class="as">' + sub + '</span></div>';
+  $('aVals').innerHTML =
+    (g ? cell('Gas level', d.gas === null ? '--' : Number(d.gas), 'Limit ' + Number(d.threshold)) : '')
+    + (v ? cell('Vibration', d.vibration ? 'Active' : 'Stopped', 'Off in ' + fmt(Number(d.vib_left) || 0)) : '');
+  $('aVals').className = 'avals' + (g && v ? ' c2' : '');
+  const k = g && v ? 'both' : g ? 'gas' : 'vib';
+  if (k !== aKey) { aKey = k; $('aIcon').innerHTML = AIC[k]; $('aTitle').textContent = ATT[k]; }
+  if (box.hidden) {
+    box.hidden = false; document.body.classList.add('alarming');
+    document.querySelectorAll('header,main').forEach(e => { e.inert = true; });
+    $('aReset').focus();
+  }
+}
+$('aReset').onclick = async () => {
+  const b = $('aReset'); b.disabled = true;
+  await control('reset_alarm');
+  setTimeout(() => { b.disabled = false; }, 1500);
+};
 $('muteBtn').onclick = () => control('mute');
 $('armBtn').onclick = () => { $('armBtn').disabled = true; control(armed ? 'disarm' : 'arm'); };
 poll(); setInterval(poll, 1000);

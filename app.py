@@ -286,7 +286,10 @@ hw = Hardware()
 atexit.register(hw.close)
 
 # ----------------------------------------------------------------- state
-ctrl = {"buzzer": "auto", "led": "auto", "muted": False}
+ctrl = {"buzzer": "auto", "led": "auto", "muted": False,
+        "gas_latch": False,   # gas alarm is latched until "Reset alarm"
+        "gas_ack": False,     # alarm was reset while gas was high: wait until the level has dropped once
+        "vib_ack": 0.0}       # time of the last "Reset alarm": vibration before it no longer counts
 series = deque(maxlen=config.GRAPH_POINTS)
 state = {
     "gas": None, "gas_voltage": None, "vibration": False, "status": "warmup",
@@ -384,15 +387,26 @@ def sensor_loop():
                 thr = settings["threshold"]
                 warm = warmup_left(now)
                 armed = settings["armed"]
-                gas_alarm = armed and gas is not None and warm == 0 and gas > thr
+                gas_hit = armed and gas is not None and warm == 0 and gas > thr
+                if not armed:
+                    ctrl["gas_latch"] = ctrl["gas_ack"] = False
+                if gas is not None and gas <= thr:
+                    ctrl["gas_ack"] = False         # level is normal again: the next rise alarms again
+                if gas_hit and not ctrl["gas_ack"]:
+                    ctrl["gas_latch"] = True        # latched: stays on until "Reset alarm" is pressed
+                gas_alarm = bool(armed and ctrl["gas_latch"])
                 gas_warn = armed and gas is not None and warm == 0 and gas > thr * 0.7
-                vib_alarm = armed and vibration     # disarmed: still measured, never alarms
+                vib_age = now - last_vib
+                # vibration: on for VIB_ALARM_HOLD seconds after the last pulse; disarmed: measured, never alarms
+                vib_alarm = bool(armed and last_vib > ctrl["vib_ack"] and vib_age < config.VIB_ALARM_HOLD)
+                vib_left = int(math.ceil(config.VIB_ALARM_HOLD - vib_age)) if vib_alarm else 0
                 alarm = gas_alarm or vib_alarm
                 if not alarm:
                     ctrl["muted"] = False       # mute lasts until the alarm ends
                 reasons = []
                 if gas_alarm:
-                    reasons.append(f"Gas level {gas} is above the threshold {thr}")
+                    reasons.append(f"Gas level {gas} is above the threshold {thr}"
+                                   if gas is not None and gas > thr else "Gas alarm stays on until it is reset")
                 if vib_alarm:
                     reasons.append("Vibration detected")
                 bz, ld = ctrl["buzzer"], ctrl["led"]
@@ -429,7 +443,8 @@ def sensor_loop():
                     buzzer_on=buzzer_on, led_on=led_on, buzzer_mode=bz_mode,
                     led_mode=led_mode, muted=muted, errors=errors,
                     uptime=int(now - START_TIME), ts=now, armed=armed,
-                    last_vib=round(last_vib, 1) if last_vib else None)
+                    last_vib=round(last_vib, 1) if last_vib else None,
+                    gas_alarm=gas_alarm, vib_alarm=vib_alarm, vib_left=vib_left)
                 series.append({"t": round(now, 1), "gas": gas, "vib": int(vibration)})
 
             # ---- alert when an alarm starts, or a 2nd alarm type joins in
@@ -570,6 +585,12 @@ async def control(request: Request):
             if action == "disarm":
                 ctrl["muted"] = False
         save_settings()
+    elif action == "reset_alarm":
+        with lock:
+            ctrl["gas_latch"] = False
+            ctrl["gas_ack"] = True          # ignore gas until the level has dropped to the threshold once
+            ctrl["vib_ack"] = time.time()   # vibration before this moment no longer counts
+            ctrl["muted"] = False
     elif action == "threshold":
         try:
             t = int(value)

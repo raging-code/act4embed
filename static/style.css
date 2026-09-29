@@ -139,3 +139,21 @@ body[data-s=warning],body[data-s=danger],body[data-s=error]{--acc:var(--ink);--t
 .dotp{fill:var(--acc);stroke:var(--bg);stroke-width:2}
 .gline{position:absolute;width:0;border-left:1px dashed var(--ink);opacity:.4;pointer-events:none;z-index:1}
 .gtip{position:absolute;transform:translateX(-50%);padding:4px 12px;border-radius:99px;background:var(--ink);color:var(--bg);font:600 .85rem Figtree,system-ui,sans-serif;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none;z-index:2}
+
+/* ambient-alarm: pop-up alert (glass card). Gas stays on until reset, vibration clears 1 min after it stops. */
+body.alarming{overflow:hidden}
+.alarm{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;overflow:auto;background:rgba(70,4,9,.72)}
+@supports((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.alarm{background:rgba(70,4,9,.38);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}}
+.acard{width:100%;max-width:380px;text-align:center;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);border-radius:28px;padding:30px 28px 28px}
+.acard .aic{display:block;margin:0 auto}
+.acard h2{font:800 1.75rem/1.05 "Bricolage Grotesque",system-ui,sans-serif;letter-spacing:-.03em;opacity:1;margin:14px 0 0;text-wrap:balance}
+.avals{display:grid;margin:24px 0 26px;padding:16px 0;border-top:1px solid rgba(255,255,255,.25);border-bottom:1px solid rgba(255,255,255,.25)}
+.avals.c2{grid-template-columns:1fr 1fr}
+.avals>div{display:grid;gap:2px;padding:0 8px}
+.avals.c2>div+div{border-left:1px solid rgba(255,255,255,.25)}
+.avals .al,.avals .as{font-size:.78rem;opacity:.85}
+.avals b{font:800 1.9rem/1.1 "Bricolage Grotesque",system-ui,sans-serif;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.areset{width:100%;border:0;border-radius:99px;padding:14px;background:#fff;color:#b3121b;font:800 1rem Figtree,system-ui,sans-serif;cursor:pointer;transition:transform .15s}
+.areset:hover:not(:disabled){transform:translateY(-1px)}
+.areset:disabled{opacity:.6;cursor:default}
+@media(prefers-reduced-motion:reduce){.areset{transition:none}}
