@@ -293,8 +293,7 @@ ctrl = {"buzzer": "auto", "led": "auto", "muted": False,
         "vib_start": 0.0,     # when the running vibration alarm started (0 = no vibration alarm)
         "reset_gen": 0,       # +1 on every "Reset alarm": lets the sensor loop see a reset that happened mid-pass
         "vib_wait": False,    # after Reset / 1-min timeout: vibration is ignored until the sensor has been quiet for a while
-        "gas_ok_since": None, # since when the gas has been well below the threshold (used to re-arm after Reset)
-        "warn_ack": False}    # after Reset: no amber "gas is rising" theme until the gas has really dropped once
+        "gas_ok_since": None} # since when the gas has been well below the threshold (used to re-arm after Reset)
 series = deque(maxlen=config.GRAPH_POINTS)
 state = {
     "gas": None, "gas_voltage": None, "vibration": False, "status": "warmup",
@@ -409,9 +408,7 @@ def sensor_loop():
                 if gas_hit and not ctrl["gas_ack"]:
                     ctrl["gas_latch"] = True        # latched: stays on until "Reset alarm" is pressed
                 gas_alarm = bool(armed and ctrl["gas_latch"])
-                if gas is not None and gas <= thr * 0.7:
-                    ctrl["warn_ack"] = False        # gas is really low again: warnings work normally again
-                gas_warn = armed and gas is not None and warm == 0 and gas > thr * 0.7 and not ctrl["warn_ack"]
+                gas_warn = armed and gas is not None and warm == 0 and gas > thr * 0.7
                 # vibration: the alarm starts on the first vibration and ends on "Reset alarm" or
                 # VIB_ALARM_HOLD seconds after it STARTED (more vibration does not extend it).
                 # Disarmed: measured, never alarms, and old vibration is thrown away.
@@ -639,12 +636,11 @@ async def control(request: Request):
             ctrl["vib_ack"] = time.time()
             ctrl["vib_wait"] = True
             ctrl["muted"] = False
-            ctrl["warn_ack"] = True         # back to the normal colour now, even if the gas is still elevated
             # answer right away: do not wait for the next sensor loop (up to SAMPLE_INTERVAL) to clear the state
             state.update(gas_alarm=False, vib_alarm=False, vib_left=0, reasons=[])
             if state.get("status") == "danger":
                 g_now, thr_now = state.get("gas"), settings["threshold"]
-                state["status"] = "safe"
+                state["status"] = "warning" if (g_now is not None and g_now > thr_now * 0.7) else "safe"
             fast_buzzer_off = ctrl["buzzer"] == "auto"
             if fast_buzzer_off:
                 state["buzzer_on"] = False

@@ -66,7 +66,7 @@
     } catch (e) { /* server unreachable: keep the current pop-up state */ }
     finally { busy = false; }
     // ignore answers that were requested before the reset button was pressed
-    if (d && my === gen && !resetting) { if (d.status) document.body.dataset.s = d.status; try { update(d); } catch (e) { console.error('[alarm] pop-up error:', e); } }
+    if (d && my === gen && !resetting) { try { update(d); } catch (e) { console.error('[alarm] pop-up error:', e); } }
   }
 
   btn.onclick = async () => {

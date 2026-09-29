@@ -275,7 +275,7 @@ function render(d) {
     const g = !!d.gas_alarm, v = !!d.vib_alarm;
     t = g && v ? 'Gas and vibration' : g ? 'Gas alarm' : 'Vibration';
     s = d.reasons.join('. ') + '.' + (d.buzzer_on && !d.muted ? ' Buzzer sounding.' : '');
-  } else if ((d.status === 'warning' || d.status === 'safe') && d.gas !== null && d.gas > d.threshold) {
+  } else if (d.status === 'warning' && d.gas !== null && d.gas > d.threshold) {
     t = 'Gas is still high'; s = 'The alarm was reset, but the level is still above the threshold.';
   } else if (d.status === 'warmup') {
     t = 'Warming up'; s = 'Gas alarms are off for ' + fmt(d.warmup_left) + ' while the MQ-2 heats up.';
@@ -331,6 +331,6 @@ $('muteBtn').onclick = () => control('mute');
 $('armBtn').onclick = () => { $('armBtn').disabled = true; control(armed ? 'disarm' : 'arm'); };
 poll(); setInterval(poll, 1000);
 </script>
-<script src="/static/alarm.js?v=10"></script>
+<script src="/static/alarm.js?v=9"></script>
 </body>
 </html>
