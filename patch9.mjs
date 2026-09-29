@@ -1,27 +1,30 @@
 #!/usr/bin/env node
 /**
- * patch8.mjs - act4embed, eighth round: premium "Frosted Glass" alarm pop-up + instant "Reset alarm".
- * Apply on top of the repo after patch7.
+ * patch9.mjs - act4embed, ninth round: premium "Frosted Glass" alarm pop-up + instant "Reset alarm".
+ * Apply on top of the repo after patch8 (commit "Pop up msg", 7e6d1f1).
  *
  *   1) Design: replaces the classic white/red card with the Design 1 "Frosted Glass" pop-up
  *      (blurred dark overlay, translucent card, pulsing bell, rounded reading rows, white pill button).
  *   2) Speed: "Reset alarm" used to feel slow because
- *        - the button only set flags; the alarm state was only recomputed by the sensor loop (up to 0.5 s later),
+ *        - the button only set flags; the alarm state was recomputed by the sensor loop up to 0.5 s later,
  *        - then the pop-up waited for the next 1 s poll, and the button stayed disabled meanwhile.
  *      Now
- *        - static/alarm.js closes the pop-up the moment you tap (stale poll answers are ignored until the
- *          server confirms), then sends the reset and re-checks at once,
- *        - app.py (reset_alarm) clears the alarm state and stops the buzzer immediately instead of
- *          waiting for the next sensor loop.
+ *        - static/alarm.js closes the pop-up the moment you tap (poll answers that were already on their
+ *          way are ignored until the server confirms), then sends the reset and re-checks at once,
+ *        - app.py (reset_alarm) clears the alarm state and stops the buzzer immediately.
+ *
+ *   Everything from patch8 is kept: the pop-up opens exactly when the screen is red (status 'danger'),
+ *   the fallback for an older app.py (no gas_alarm / vib_alarm), the "Alarm active" / reasons card and
+ *   the console error logging.
  *
  *   Files changed: static/alarm.js, static/style.css, app.py, templates/{index,history,settings}.html
- *   (the templates only get ?v=6 -> ?v=7 so browsers load the new files).
+ *   (the templates only get ?v=8 -> ?v=9 so browsers load the new files).
  *
  * Usage (from the repo root, next to app.py):
- *     node patch8.mjs --dry-run   check only, writes nothing
- *     node patch8.mjs
- * If an anchor doesn't match, NOTHING is written. Undo with:
- *     git checkout -- app.py static templates
+ *     node patch9.mjs --dry-run   check only, writes nothing
+ *     node patch9.mjs
+ * If an anchor doesn't match, NOTHING is written. Backups go to .patch9-backup/
+ * Undo with:  git checkout -- app.py static templates
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,7 +40,7 @@ function load(rel) {
   const p = path.join(ROOT, rel);
   if (!fs.existsSync(p)) fail(rel + ' not found. Run this from the repo root (next to app.py).');
   const raw = fs.readFileSync(p, 'utf8');
-  const e = { text: raw.replace(/\r\n/g, '\n'), crlf: raw.includes('\r\n') };
+  const e = { text: raw.replace(/\r\n/g, '\n'), crlf: raw.includes('\r\n'), raw };
   out.set(rel, e);
   return e;
 }
@@ -59,9 +62,9 @@ function fromMarker(rel, marker, repl) {
   e.text = e.text.slice(0, i) + repl;
 }
 
-if (load('static/alarm.js').text.includes('Design 1: frosted glass')) {
-  console.log('Already patched (patch8). Nothing to do.'); process.exit(0);
-}
+const cur = load('static/alarm.js').text;
+if (cur.includes('Design 1: frosted glass')) { console.log('Already patched (patch9). Nothing to do.'); process.exit(0); }
+if (!cur.includes('legacy')) fail('static/alarm.js is not the patch8 version. Pull the latest repo (or run patch8.mjs) first.');
 
 /* ============================================================ static/alarm.js */
 const ALARM_JS = String.raw`/* Alarm pop-up (Design 1: frosted glass). Loaded on EVERY page, polls /data by itself.
@@ -70,7 +73,7 @@ const ALARM_JS = String.raw`/* Alarm pop-up (Design 1: frosted glass). Loaded on
    until the server has confirmed the reset. */
 (function () {
   const ICON = '<path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/><path d="M21 6.727a11.05 11.05 0 0 0 -2.794 -3.727"/><path d="M3 6.727a11.05 11.05 0 0 1 2.792 -3.727"/>';
-  const TITLE = { gas: 'Gas detected', vib: 'Vibration detected', both: 'Gas and vibration detected' };
+  const TITLE = { gas: 'Gas detected', vib: 'Vibration detected', both: 'Gas and vibration detected', any: 'Alarm active' };
   const box = document.createElement('div');
   box.className = 'alarm'; box.id = 'alarm'; box.hidden = true;
   box.setAttribute('role', 'alertdialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-labelledby', 'aTitle');
@@ -90,7 +93,7 @@ const ALARM_JS = String.raw`/* Alarm pop-up (Design 1: frosted glass). Loaded on
     const l = document.createElement('span'); l.className = 'al'; l.textContent = label;
     const v = document.createElement('span'); v.className = 'av';
     const b = document.createElement('b'); b.textContent = value;
-    const s = document.createElement('span'); s.className = 'as'; s.textContent = ' \u00b7 ' + sub;
+    const s = document.createElement('span'); s.className = 'as'; s.textContent = sub ? ' \u00b7 ' + sub : '';
     v.append(b, s); r.append(l, v); return r;
   }
 
@@ -100,15 +103,21 @@ const ALARM_JS = String.raw`/* Alarm pop-up (Design 1: frosted glass). Loaded on
     document.querySelectorAll('header,main').forEach(e => { e.inert = false; });
   }
 
-  let busy = false, resetting = false, gen = 0;
+  let warned = false, busy = false, resetting = false, gen = 0;
 
   function update(d) {
-    const g = !!d.gas_alarm, v = !!d.vib_alarm, on = d.status === 'danger' && (g || v);
+    // An older app.py sends no gas_alarm / vib_alarm: work them out from the readings instead.
+    const legacy = d.gas_alarm === undefined && d.vib_alarm === undefined;
+    if (legacy && !warned) { warned = true; console.warn('[alarm] /data has no gas_alarm / vib_alarm. Restart python app.py so the latest app.py is running.'); }
+    const g = legacy ? (d.gas !== null && d.gas !== undefined && Number(d.gas) > Number(d.threshold)) : !!d.gas_alarm;
+    const v = legacy ? !!d.vibration : !!d.vib_alarm;
+    const on = d.status === 'danger';   // the pop-up opens exactly when the screen turns red
     if (!on) { hide(); return; }
-    title.textContent = TITLE[g && v ? 'both' : g ? 'gas' : 'vib'];
+    title.textContent = TITLE[g && v ? 'both' : g ? 'gas' : v ? 'vib' : 'any'];
     const items = [];
     if (g) items.push(row('Gas level', d.gas === null ? '--' : Number(d.gas), 'Limit ' + Number(d.threshold)));
     if (v) items.push(row('Vibration', d.vibration ? 'Active' : 'Stopped', 'Off in ' + fmt(Number(d.vib_left) || 0)));
+    if (!items.length) items.push(row('Reason', (Array.isArray(d.reasons) && d.reasons.join('; ')) || 'An alarm is active', ''));
     rows.replaceChildren(...items);
     if (box.hidden) {
       box.hidden = false; document.body.classList.add('alarming');
@@ -119,12 +128,14 @@ const ALARM_JS = String.raw`/* Alarm pop-up (Design 1: frosted glass). Loaded on
 
   async function poll(force) {
     if (!force && (busy || resetting)) return;
-    const my = gen; busy = true;
+    const my = gen; let d = null; busy = true;
     try {
       const r = await fetch('/data?since=1e18', { cache: 'no-store' });
-      if (r.ok) { const d = await r.json(); if (my === gen && !resetting) update(d); }
+      if (r.ok) d = await r.json();
     } catch (e) { /* server unreachable: keep the current pop-up state */ }
     finally { busy = false; }
+    // ignore answers that were requested before the reset button was pressed
+    if (d && my === gen && !resetting) { try { update(d); } catch (e) { console.error('[alarm] pop-up error:', e); } }
   }
 
   btn.onclick = async () => {
@@ -190,14 +201,18 @@ once('app.py',
 /* ============================================================ templates (cache-busting) */
 for (const t of ['index', 'history', 'settings']) {
   const rel = 'templates/' + t + '.html';
-  once(rel, '/static/style.css?v=6', '/static/style.css?v=7');
-  once(rel, '/static/alarm.js?v=6', '/static/alarm.js?v=7');
+  once(rel, '/static/style.css?v=8', '/static/style.css?v=9');
+  once(rel, '/static/alarm.js?v=8', '/static/alarm.js?v=9');
 }
 
-/* ---- write everything (or just report) */
+/* ---- backups + write everything (or just report) */
+const BAK = path.join(ROOT, '.patch9-backup');
 for (const [rel, e] of out) {
   console.log((DRY ? 'would update ' : 'updating ') + rel);
-  if (!DRY) fs.writeFileSync(path.join(ROOT, rel), e.crlf ? e.text.replace(/\n/g, '\r\n') : e.text);
+  if (DRY) continue;
+  fs.mkdirSync(path.dirname(path.join(BAK, rel)), { recursive: true });
+  fs.writeFileSync(path.join(BAK, rel), e.raw);
+  fs.writeFileSync(path.join(ROOT, rel), e.crlf ? e.text.replace(/\n/g, '\r\n') : e.text);
 }
 console.log(DRY ? '\nDry run OK. Run again without --dry-run to apply.'
-                : '\nDone. Restart python app.py, hard-refresh the browser (Ctrl+F5), then press "Simulate gas leak" in Settings.');
+                : '\nDone. Backups are in .patch9-backup/ (delete the folder when happy).\nRestart python app.py, hard-refresh the browser (Ctrl+F5), then press "Simulate gas leak" in Settings.');

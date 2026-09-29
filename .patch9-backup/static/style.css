@@ -140,26 +140,21 @@ body[data-s=warning],body[data-s=danger],body[data-s=error]{--acc:var(--ink);--t
 .gline{position:absolute;width:0;border-left:1px dashed var(--ink);opacity:.4;pointer-events:none;z-index:1}
 .gtip{position:absolute;transform:translateX(-50%);padding:4px 12px;border-radius:99px;background:var(--ink);color:var(--bg);font:600 .85rem Figtree,system-ui,sans-serif;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none;z-index:2}
 
-/* ambient-alarm: pop-up alert, Design 1 (frosted glass). Gas stays on until reset, vibration clears 1 min after it stops. */
+/* ambient-alarm: pop-up alert, Design 1 (classic card). Gas stays on until reset, vibration clears 1 min after it stops. */
 body.alarming{overflow:hidden}
-@keyframes apop{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
-@keyframes afade{from{opacity:0}to{opacity:1}}
-@keyframes aring{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.9);opacity:0}}
-.alarm{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;overflow:auto;background:radial-gradient(circle at 50% 30%,rgba(179,18,27,.35),rgba(6,8,12,.82) 70%);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);animation:afade .15s ease-out}
-.acard{width:100%;max-width:380px;padding:30px 26px 26px;border-radius:28px;background:linear-gradient(160deg,rgba(255,255,255,.14),rgba(255,255,255,.05));border:1px solid rgba(255,255,255,.2);box-shadow:0 30px 80px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.25);color:#fff;text-align:center;animation:apop .2s ease-out}
-.ahead{display:flex;flex-direction:column;align-items:center;gap:14px;margin-bottom:6px}
-.aico{position:relative;width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:rgba(255,90,95,.18);color:#ff8589}
-.aico::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid #ff5a5f;animation:aring 1.8s ease-out infinite}
-.alab{font:600 .72rem Figtree,system-ui,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:#ffb0b3}
-.acard h2{font:700 1.6rem/1.15 "Bricolage Grotesque",Figtree,system-ui,sans-serif;letter-spacing:-.02em;margin:4px 0 18px;color:#fff;opacity:1}
-.arows{display:grid;gap:8px;text-align:left}
-.arow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:13px 16px;border-radius:16px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1)}
-.arow .al{color:rgba(255,255,255,.7);font-size:.9rem}
+@keyframes alarmblink{0%,100%{background:#a32d2d}50%{background:#5a1010}}
+.alarm{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;overflow:auto;background:#a32d2d;animation:alarmblink 1.2s ease-in-out infinite}
+.acard{width:100%;max-width:360px;background:#fff;color:#2c2c2a;border-radius:12px;overflow:hidden}
+.ahead{display:flex;align-items:center;gap:10px;background:#a32d2d;color:#fff;padding:12px 16px;font-weight:600}
+.abody{padding:16px}
+.acard h2{font:600 1.25rem/1.2 Figtree,system-ui,sans-serif;margin:0 0 10px;color:#2c2c2a;opacity:1}
+.arow{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid #d3d1c7;font-size:.9rem}
+.arow .al{color:#5f5e5a}
 .arow .av{text-align:right;font-variant-numeric:tabular-nums}
-.arow .av b{font-weight:700;font-size:1.15rem}
-.arow .as{color:rgba(255,255,255,.55);font-size:.82rem}
-.areset{width:100%;margin-top:20px;border:0;border-radius:99px;padding:14px;background:#fff;color:#14161a;font:700 1rem Figtree,system-ui,sans-serif;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:transform .08s,box-shadow .15s}
-.areset:hover{box-shadow:0 8px 24px rgba(255,255,255,.25)}
-.areset:active{transform:scale(.97)}
-.areset:focus-visible{outline:3px solid #ff8589;outline-offset:3px}
-@media(prefers-reduced-motion:reduce){.alarm,.acard,.aico::after{animation:none}}
+.arow .av b{font-weight:600}
+.arow .as{color:#5f5e5a}
+.areset{width:100%;margin-top:14px;border:0;border-radius:8px;padding:11px;background:#a32d2d;color:#fff;font:600 1rem Figtree,system-ui,sans-serif;cursor:pointer}
+.areset:hover:not(:disabled){background:#8f2525}
+.areset:disabled{opacity:.6;cursor:default}
+@media(prefers-reduced-motion:reduce){.alarm{animation:none}}
+.areset:focus-visible{outline:3px solid #2c2c2a;outline-offset:2px}
