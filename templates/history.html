@@ -48,7 +48,7 @@
   <section class="card">
     <div class="ghead"><span class="lbl">Gas trend</span><div class="zbar"><span class="zlbl">1.0&times;</span><button class="btn zb" data-z="out" aria-label="Zoom out">&minus;</button><button class="btn zb" data-z="in" aria-label="Zoom in">+</button><button class="btn zb" data-z="reset">Reset</button></div></div>
     <div class="gscroll" id="gsc" tabindex="0" role="region" aria-label="Gas history graph, scrolls sideways"><svg class="trace" id="trace" viewBox="0 0 720 260" preserveAspectRatio="none" role="img" aria-label="Historical gas trend" style="height:280px"></svg></div>
-    <div class="axis"><span id="t0"></span><span>Dashed line: alarm threshold. Shaded bands: vibration seen. Drag or swipe sideways; Ctrl + mouse wheel or +/- to zoom.</span><span id="t1"></span></div>
+    <div class="axis"><span id="t0"></span><span>Dashed line: alarm threshold. Shaded bands: vibration seen. Mouse wheel over the graph zooms; drag or swipe sideways to scroll.</span><span id="t1"></span></div>
     <p class="muted" id="empty" hidden>No data in this range yet. Leave the dashboard app running to collect readings.</p>
   </section>
 
@@ -138,10 +138,11 @@ function resetZoom() { zoom = 1; SC.forEach(e => { e.firstElementChild.style.wid
 SC.forEach((s, i) => {
   s.addEventListener('scroll', () => { const o = SC[1 - i]; if (Math.abs(o.scrollLeft - s.scrollLeft) > 1) o.scrollLeft = s.scrollLeft; onScroll(); });
   s.addEventListener('wheel', e => {
-    if (!(e.ctrlKey || e.metaKey)) return;          // plain wheel keeps scrolling the page
-    e.preventDefault();
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;   // shift + wheel / sideways swipe = scroll
+    e.preventDefault();                                                  // wheel = zoom at the pointer
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
     const r = s.getBoundingClientRect();
-    setZoom(zoom * (e.deltaY < 0 ? 1.25 : 0.8), (e.clientX - r.left) / r.width);
+    setZoom(zoom * Math.exp(-dy * 0.002), (e.clientX - r.left) / r.width);
   }, { passive: false });
   let down = null;                                  // mouse drag = pan (touch already swipes natively)
   s.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' || e.button !== 0) return; down = { x: e.clientX, l: s.scrollLeft }; s.setPointerCapture(e.pointerId); s.classList.add('drag'); });

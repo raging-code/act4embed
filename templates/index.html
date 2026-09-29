@@ -17,7 +17,7 @@
   {% if sim %}<div class="banner">Simulation mode: vibration, LED and buzzer are simulated. The gas value comes from the ESP32 when it is connected, otherwise it is fake. Use the test buttons in Settings.</div>{% endif %}
   <div id="errors" class="banner" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
 
-  <section aria-live="polite">
+  <section aria-live="polite" class="hero">
     <h1 class="verdict" id="verdict">Connecting</h1>
     <p class="sub" id="sub">Waiting for the Raspberry Pi.</p>
     <div class="row"><button class="btn arm" id="armBtn" disabled>Arm / Disarm</button><button class="btn fill" id="muteBtn" hidden>Mute alarm</button></div>
@@ -41,14 +41,14 @@
       <div class="gph">
         <div class="ghead"><h2>Gas graph</h2><div class="zbar"><span class="zlbl">1.0&times;</span><button class="btn zb" data-z="out" aria-label="Zoom out">&minus;</button><button class="btn zb" data-z="in" aria-label="Zoom in">+</button><button class="btn zb" data-z="live">Live</button></div></div>
         <div class="gscroll" id="gsc" tabindex="0" role="region" aria-label="Gas graph, scrolls sideways"><svg class="trace" id="trace" viewBox="0 0 720 230" preserveAspectRatio="none" role="img" aria-label="Live gas trace"></svg></div>
-        <p class="muted">Dashed line: alarm threshold. Drag or swipe sideways for older data. Ctrl + mouse wheel or the +/- buttons zoom.</p>
+        <p class="muted">Dashed line: alarm threshold. Mouse wheel over the graph zooms. Drag or swipe sideways for older data.</p>
       </div>
     </div>
 
     <div class="card wgt">
       <span class="lbl">Vibration (SW-420)</span>
       <div class="wtop">
-        <div class="state"><i class="dot" id="vibDot" aria-hidden="true"></i><span id="vibState">--</span></div>
+        <div class="state"><span id="vibState">--</span></div>
         <div>
           <p class="muted">Last vibration: <span id="vibLast">--</span></p>
           <p class="muted">A detection stays on screen for a few seconds after the last pulse.</p>
@@ -173,7 +173,7 @@ function setZoom(z, anchor) {         // anchor 0..1 = which part of the visible
   const tA = S[n - 1].t - (s.scrollWidth - (s.scrollLeft + anchor * cw)) / (cw / 120 * zoom);
   zoom = z;
   const L = redraw(true);
-  const left = wasEnd && anchor === 1 ? L.total : L.x(tA) - anchor * cw;
+  const left = wasEnd ? L.total : L.x(tA) - anchor * cw;
   SC.forEach(e => { e.scrollLeft = left; });
   showZoom(atEnd());
 }
@@ -182,10 +182,11 @@ function goLive() { zoom = 1; redraw(true); SC.forEach(s => { s.scrollLeft = s.s
 SC.forEach((s, i) => {
   s.addEventListener('scroll', () => { const o = SC[1 - i]; if (Math.abs(o.scrollLeft - s.scrollLeft) > 1) o.scrollLeft = s.scrollLeft; onScroll(); });
   s.addEventListener('wheel', e => {
-    if (!(e.ctrlKey || e.metaKey)) return;          // plain wheel keeps scrolling the page
-    e.preventDefault();
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;   // shift + wheel / sideways swipe = scroll
+    e.preventDefault();                                                  // wheel = zoom at the pointer
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
     const r = s.getBoundingClientRect();
-    setZoom(zoom * (e.deltaY < 0 ? 1.25 : 0.8), (e.clientX - r.left) / r.width);
+    setZoom(zoom * Math.exp(-dy * 0.002), (e.clientX - r.left) / r.width);
   }, { passive: false });
   let down = null;                                  // mouse drag = pan (touch already swipes natively)
   s.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' || e.button !== 0) return; down = { x: e.clientX, l: s.scrollLeft }; s.setPointerCapture(e.pointerId); s.classList.add('drag'); });
@@ -221,7 +222,8 @@ function render(d) {
   const ab = $('armBtn');
   ab.disabled = false;
   ab.className = 'btn arm ' + (armed ? 'on' : 'off');
-  ab.textContent = armed ? 'Armed \u00b7 tap to disarm' : 'Disarmed \u00b7 tap to arm';
+  ab.textContent = armed ? 'Disarm' : 'Arm';
+  ab.setAttribute('aria-label', armed ? 'System is armed. Press to disarm' : 'System is disarmed. Press to arm');
 
   $('gasVal').textContent = d.gas === null ? '--' : d.gas;
   $('gasFill').style.width = (d.gas === null ? 0 : d.gas / 1023 * 100) + '%';
@@ -233,7 +235,6 @@ function render(d) {
   $('cleanAir').textContent = d.esp32_calibrating ? 'calibrating (30 s), keep the sensor in clean air...'
     : d.clean_air == null ? 'not calibrated (type C in the ESP32 serial monitor)' : d.clean_air + ' of 1023 (raw ' + d.clean_air_raw + ' of 4095)';
 
-  $('vibDot').classList.toggle('on', d.vibration);
   $('vibState').textContent = d.vibration ? 'Vibration detected' : 'No vibration';
   $('vibLast').textContent = d.last_vib ? ago(d.ts - d.last_vib) : 'none since the app started';
 

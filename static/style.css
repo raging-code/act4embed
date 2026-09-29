@@ -109,3 +109,14 @@ body[data-s=disarmed]{--bg:#2d3236;--ink:#eef1f3}
 .grid{stroke:var(--ink);opacity:.14;vector-effect:non-scaling-stroke}
 .tk{fill:var(--ink);opacity:.65;font:12px Figtree,system-ui,sans-serif}
 @media(max-width:800px){.wtop{grid-template-columns:1fr}}
+
+/* ambient-widgets-3: centered headline, cleaner arm button */
+.hero{text-align:center}
+.hero .sub{margin:16px auto 0}
+.hero .row{justify-content:center;margin-top:26px}
+.btn.arm{border:0;border-radius:99px;min-width:180px;padding:14px 44px;color:var(--ink);font:800 1.1rem Figtree,system-ui,sans-serif;letter-spacing:.02em;box-shadow:0 6px 22px rgba(0,0,0,.28);transition:transform .15s,box-shadow .15s,background .3s}
+.btn.arm.on{background:#4ade80;color:#04210f}
+.btn.arm.off{background:#f87171;color:#2a0606}
+.btn.arm:disabled{background:var(--glass);color:var(--ink);box-shadow:none}
+.btn.arm:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 10px 26px rgba(0,0,0,.34)}
+.btn.arm:active:not(:disabled){transform:translateY(1px);box-shadow:0 3px 12px rgba(0,0,0,.28)}
