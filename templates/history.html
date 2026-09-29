@@ -48,7 +48,7 @@
   <section class="card">
     <div class="ghead"><span class="lbl">Gas trend</span><div class="zbar"><span class="zlbl">1.0&times;</span><button class="btn zb" data-z="out" aria-label="Zoom out">&minus;</button><button class="btn zb" data-z="in" aria-label="Zoom in">+</button><button class="btn zb" data-z="reset">Reset</button></div></div>
     <div class="gscroll" id="gsc" tabindex="0" role="region" aria-label="Gas history graph, scrolls sideways"><svg class="trace" id="trace" viewBox="0 0 720 260" preserveAspectRatio="none" role="img" aria-label="Historical gas trend" style="height:280px"></svg></div>
-    <div class="axis"><span id="t0"></span><span>Dashed line: alarm threshold. Shaded bands: vibration seen. Mouse wheel over the graph zooms; drag or swipe sideways to scroll.</span><span id="t1"></span></div>
+    <div class="axis"><span id="t0"></span><span>Dashed line: alarm threshold, tinted area: alarm zone. Shaded bands: vibration seen. Hover for exact values. Mouse wheel over the graph zooms; drag or swipe sideways to scroll.</span><span id="t1"></span></div>
     <p class="muted" id="empty" hidden>No data in this range yet. Leave the dashboard app running to collect readings.</p>
   </section>
 
@@ -82,21 +82,51 @@ function query() {
   return 'start=' + s + '&end=' + e;
 }
 
+let PTS = [];                     // points on screen (used by the hover pill)
+function curve(p) {
+  const n = p.length;
+  if (!n) return '';
+  let d = 'M' + p[0][0].toFixed(1) + ' ' + p[0][1].toFixed(1);
+  if (n < 2) return d;
+  const dx = [], sl = [], m = new Array(n);
+  for (let i = 0; i < n - 1; i++) { dx[i] = p[i + 1][0] - p[i][0]; sl[i] = dx[i] ? (p[i + 1][1] - p[i][1]) / dx[i] : 0; }
+  m[0] = sl[0]; m[n - 1] = sl[n - 2];
+  for (let i = 1; i < n - 1; i++) m[i] = sl[i - 1] * sl[i] <= 0 ? 0 : (sl[i - 1] + sl[i]) / 2;
+  for (let i = 0; i < n - 1; i++) {
+    if (sl[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / sl[i], b = m[i + 1] / sl[i], s = a * a + b * b;
+    if (s > 9) { const k = 3 / Math.sqrt(s); m[i] = k * a * sl[i]; m[i + 1] = k * b * sl[i]; }
+  }
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d += 'C' + (p[i][0] + h).toFixed(1) + ' ' + (p[i][1] + m[i] * h).toFixed(1) + ' ' + (p[i + 1][0] - h).toFixed(1) + ' ' + (p[i + 1][1] - m[i + 1] * h).toFixed(1) + ' ' + p[i + 1][0].toFixed(1) + ' ' + p[i + 1][1].toFixed(1);
+  }
+  return d;
+}
+const AUR_DEFS = '<defs><linearGradient id="aurG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--acc);stop-opacity:.42"/><stop offset="1" style="stop-color:var(--acc);stop-opacity:0"/></linearGradient></defs>';
 function draw(pts, thr) {
-  const w = 720, h = 260, el = $('trace');
+  const w = 720, h = 260, pad = 6, el = $('trace');
+  PTS = pts;
   if (!pts.length) { el.innerHTML = ''; rng = { t0: 0, t1: 0 }; return; }
   const t0 = pts[0].t, t1 = pts[pts.length - 1].t, span = Math.max(1, t1 - t0), bw = Math.max(2, w / pts.length);
-  const x = t => (t - t0) / span * w, y = g => h - g / 1023 * h;
-  let p = '', b = '';
+  const x = t => (t - t0) / span * w, y = g => pad + (h - 2 * pad) * (1 - g / 1023);
+  let b = '', grid = ''; const c = []; let px = -9;
   pts.forEach((q, i) => {
-    const X = x(q.t).toFixed(1);
-    p += (i ? 'L' : 'M') + X + ' ' + y(q.gas).toFixed(1);
-    if (q.vib) b += '<rect class="vb" x="' + X + '" y="0" width="' + bw.toFixed(1) + '" height="' + h + '"/>';
+    const X = x(q.t);
+    if (q.vib) b += '<rect class="vb" x="' + X.toFixed(1) + '" y="0" width="' + bw.toFixed(1) + '" height="' + h + '"/>';
+    if (X - px >= 0.4 || i === pts.length - 1) { c.push([X, y(q.gas)]); px = X; }
   });
-  el.innerHTML = b
-    + '<path class="ar" d="' + p + 'L' + x(t1).toFixed(1) + ' ' + h + 'L0 ' + h + 'Z"/>'
-    + '<line class="th" x1="0" x2="' + w + '" y1="' + y(thr) + '" y2="' + y(thr) + '"/>'
-    + '<path class="ln" d="' + p + '"/>';
+  [0.25, 0.5, 0.75].forEach(f => {
+    const Y = (pad + (h - 2 * pad) * (1 - f)).toFixed(1);
+    grid += '<line class="grid" x1="0" x2="' + w + '" y1="' + Y + '" y2="' + Y + '"/>';
+  });
+  const d = curve(c), ty = y(thr).toFixed(1);
+  el.innerHTML = AUR_DEFS
+    + '<rect class="zone" x="0" y="' + pad + '" width="' + w + '" height="' + Math.max(0, y(thr) - pad).toFixed(1) + '"/>'
+    + grid + b
+    + '<path d="' + d + 'L' + c[c.length - 1][0].toFixed(1) + ' ' + (h - pad) + 'L' + c[0][0].toFixed(1) + ' ' + (h - pad) + 'Z" fill="url(#aurG)"/>'
+    + '<line class="thr" x1="0" x2="' + w + '" y1="' + ty + '" y2="' + ty + '"/>'
+    + '<path class="ln" d="' + d + '"/>';
   rng = { t0, t1: Math.max(t1, t0 + 1) };
 }
 
@@ -149,6 +179,34 @@ SC.forEach((s, i) => {
   s.addEventListener('pointermove', e => { if (down) s.scrollLeft = down.l - (e.clientX - down.x); });
   const end = () => { down = null; s.classList.remove('drag'); };
   s.addEventListener('pointerup', end); s.addEventListener('pointercancel', end);
+});
+
+/* ---------- hover crosshair + value pill (mouse only) ---------- */
+function hoverTip(sc, lookup) {
+  const card = sc.closest('.card');
+  const tip = document.createElement('div'), gl = document.createElement('div');
+  tip.className = 'gtip'; gl.className = 'gline'; tip.hidden = gl.hidden = true;
+  card.append(gl, tip);
+  const hide = () => { tip.hidden = gl.hidden = true; };
+  sc.addEventListener('pointerleave', hide);
+  sc.addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse' || sc.classList.contains('drag')) return hide();
+    const r = sc.getBoundingClientRect(), c = card.getBoundingClientRect();
+    const txt = lookup(e.clientX - r.left + sc.scrollLeft, sc.scrollWidth);
+    if (!txt) return hide();
+    tip.textContent = txt; tip.hidden = gl.hidden = false;
+    const x = e.clientX - c.left, w = tip.offsetWidth / 2 + 8;
+    gl.style.left = x + 'px'; gl.style.top = (r.top - c.top) + 'px'; gl.style.height = r.height + 'px';
+    tip.style.left = Math.min(Math.max(x, w), c.width - w) + 'px'; tip.style.top = (r.top - c.top + 8) + 'px';
+  });
+}
+hoverTip(SC[0], (xc, tw) => {
+  if (!PTS.length) return null;
+  const a = PTS[0].t, z = PTS[PTS.length - 1].t, t = a + xc / tw * Math.max(1, z - a);
+  let lo = 0, hi = PTS.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (PTS[m].t < t) lo = m + 1; else hi = m; }
+  if (lo > 0 && t - PTS[lo - 1].t < PTS[lo].t - t) lo--;
+  return PTS[lo].gas + ' at ' + new Date(PTS[lo].t * 1000).toLocaleString();
 });
 
 document.querySelectorAll('.zb').forEach(b => {
