@@ -2,7 +2,7 @@
    Gas stays on until "Reset alarm"; vibration clears 1 min after the last vibration. */
 (function () {
   const ICON = '<path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/><path d="M21 6.727a11.05 11.05 0 0 0 -2.794 -3.727"/><path d="M3 6.727a11.05 11.05 0 0 1 2.792 -3.727"/>';
-  const TITLE = { gas: 'Gas detected', vib: 'Vibration detected', both: 'Gas and vibration detected', any: 'Alarm active' };
+  const TITLE = { gas: 'Gas detected', vib: 'Vibration detected', both: 'Gas and vibration detected' };
   const box = document.createElement('div');
   box.className = 'alarm'; box.id = 'alarm'; box.hidden = true;
   box.setAttribute('role', 'alertdialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-labelledby', 'aTitle');
@@ -20,19 +20,12 @@
     const l = document.createElement('span'); l.className = 'al'; l.textContent = label;
     const v = document.createElement('span'); v.className = 'av';
     const b = document.createElement('b'); b.textContent = value;
-    const s = document.createElement('span'); s.className = 'as'; s.textContent = sub ? ' \u00b7 ' + sub : '';
+    const s = document.createElement('span'); s.className = 'as'; s.textContent = ' \u00b7 ' + sub;
     v.append(b, s); r.append(l, v); return r;
   }
 
-  let warned = false;
-
   function update(d) {
-    // An older app.py sends no gas_alarm / vib_alarm: work them out from the readings instead.
-    const legacy = d.gas_alarm === undefined && d.vib_alarm === undefined;
-    if (legacy && !warned) { warned = true; console.warn('[alarm] /data has no gas_alarm / vib_alarm. Restart python app.py so the latest app.py is running.'); }
-    const g = legacy ? (d.gas !== null && d.gas !== undefined && Number(d.gas) > Number(d.threshold)) : !!d.gas_alarm;
-    const v = legacy ? !!d.vibration : !!d.vib_alarm;
-    const on = d.status === 'danger';   // the pop-up opens exactly when the screen turns red
+    const g = !!d.gas_alarm, v = !!d.vib_alarm, on = d.status === 'danger' && (g || v);
     if (!on) {
       if (!box.hidden) {
         box.hidden = true; document.body.classList.remove('alarming');
@@ -40,11 +33,10 @@
       }
       return;
     }
-    title.textContent = TITLE[g && v ? 'both' : g ? 'gas' : v ? 'vib' : 'any'];
+    title.textContent = TITLE[g && v ? 'both' : g ? 'gas' : 'vib'];
     const items = [];
     if (g) items.push(row('Gas level', d.gas === null ? '--' : Number(d.gas), 'Limit ' + Number(d.threshold)));
     if (v) items.push(row('Vibration', d.vibration ? 'Active' : 'Stopped', 'Off in ' + fmt(Number(d.vib_left) || 0)));
-    if (!items.length) items.push(row('Reason', (Array.isArray(d.reasons) && d.reasons.join('; ')) || 'An alarm is active', ''));
     rows.replaceChildren(...items);
     if (box.hidden) {
       box.hidden = false; document.body.classList.add('alarming');
@@ -56,13 +48,11 @@
   let busy = false;
   async function poll() {
     if (busy) return; busy = true;
-    let d = null;
     try {
       const r = await fetch('/data?since=1e18', { cache: 'no-store' });
-      if (r.ok) d = await r.json();
+      if (r.ok) update(await r.json());
     } catch (e) { /* server unreachable: keep the current pop-up state */ }
     finally { busy = false; }
-    if (d) { try { update(d); } catch (e) { console.error('[alarm] pop-up error:', e); } }
   }
   btn.onclick = async () => {
     btn.disabled = true;

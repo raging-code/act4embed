@@ -611,7 +611,6 @@ async def control(request: Request):
         hw.sim_gas_until = time.time() + 10
         with lock:
             ctrl["sim_skip_warmup"] = True     # test button: do not wait for the MQ-2 warm-up
-            ctrl["gas_ack"] = False            # test button: alarm again even right after "Reset alarm"
     elif action == "sim_vibration" and SIMULATION:
         hw.vib_event = time.time()
     else:
