@@ -21,7 +21,7 @@
   <section aria-live="polite" class="hero">
     <h1 class="verdict" id="verdict">Connecting</h1>
     <p class="sub" id="sub">Waiting for the Raspberry Pi.</p>
-    <div class="row"><button class="btn arm" id="armGasBtn" disabled>Gas: Arm / Disarm</button><button class="btn arm" id="armVibBtn" disabled>Vibration: Arm / Disarm</button><button class="btn fill" id="muteBtn" hidden>Mute alarm</button></div>
+    <div class="row"><button class="btn arm" id="armBtn" disabled>Arm / Disarm</button><button class="btn fill" id="muteBtn" hidden>Mute alarm</button></div>
   </section>
 
   <section class="stack">
@@ -72,7 +72,7 @@ const S = [];                     // every sample: { t: time, g: gas or null, v:
 const MAXS = 7200;                // 1 hour at 2 samples per second (GRAPH_POINTS in config.py)
 const SC = [$('gsc'), $('vsc')];  // the two scrolling graph boxes
 const ZMIN = 0.1, ZMAX = 20;
-let since = 0, busy = false, armedGas = true, armedVib = true, zoom = 1, thr = 400;
+let since = 0, busy = false, armed = true, zoom = 1, thr = 400;
 const TXT = {
   safe: ['All clear', 'Gas and vibration are both normal.'],
   warning: ['Gas is rising', 'The level is close to the alarm threshold.'],
@@ -318,8 +318,7 @@ window.addEventListener('resize', () => redraw());
 /* ---------- live data ---------- */
 function render(d) {
   document.body.dataset.s = d.status;
-  armedGas = d.armed_gas !== false;
-  armedVib = d.armed_vib !== false;
+  armed = d.armed !== false;
   thr = d.threshold;
   let t, s;
   if (d.status === 'danger') {
@@ -334,17 +333,11 @@ function render(d) {
   setText('verdict', t); setText('sub', s);
   $('muteBtn').hidden = !(d.buzzer_on && !d.muted);
 
-  const gb = $('armGasBtn');
-  gb.disabled = false;
-  gb.className = 'btn arm ' + (armedGas ? 'on' : 'off');
-  gb.textContent = 'Gas: ' + (armedGas ? 'Armed' : 'Disarmed');
-  gb.setAttribute('aria-label', armedGas ? 'Gas sensor is armed. Press to disarm' : 'Gas sensor is disarmed. Press to arm');
-
-  const vb = $('armVibBtn');
-  vb.disabled = false;
-  vb.className = 'btn arm ' + (armedVib ? 'on' : 'off');
-  vb.textContent = 'Vibration: ' + (armedVib ? 'Armed' : 'Disarmed');
-  vb.setAttribute('aria-label', armedVib ? 'Vibration sensor is armed. Press to disarm' : 'Vibration sensor is disarmed. Press to arm');
+  const ab = $('armBtn');
+  ab.disabled = false;
+  ab.className = 'btn arm ' + (armed ? 'on' : 'off');
+  ab.textContent = armed ? 'Disarm' : 'Arm';
+  ab.setAttribute('aria-label', armed ? 'System is armed. Press to disarm' : 'System is disarmed. Press to arm');
 
   setText('gasVal', d.gas === null ? '--' : d.gas);
   $('gasFill').style.width = (d.gas === null ? 0 : d.gas / 1023 * 100) + '%';
@@ -396,8 +389,7 @@ async function control(action) {
   poll();
 }
 $('muteBtn').onclick = () => control('mute');
-$('armGasBtn').onclick = () => { $('armGasBtn').disabled = true; control(armedGas ? 'disarm_gas' : 'arm_gas'); };
-$('armVibBtn').onclick = () => { $('armVibBtn').disabled = true; control(armedVib ? 'disarm_vib' : 'arm_vib'); };
+$('armBtn').onclick = () => { $('armBtn').disabled = true; control(armed ? 'disarm' : 'arm'); };
 poll();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 </script>

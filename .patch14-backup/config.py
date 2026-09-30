@@ -32,8 +32,6 @@ WARMUP_SECONDS = 120          # gas alarms are ignored while the MQ-2 heats up
 VIB_ALARM_HOLD = 60           # a vibration alarm turns off this many seconds after it STARTED (or on Reset alarm)
 VIB_RESET_GRACE = 3           # (no longer used since patch11, see VIB_SETTLE_SECONDS)
 VIB_SETTLE_SECONDS = 2        # after Reset alarm or the 1-minute timeout, the sensor must be quiet this long before it can alarm again
-VIB_QUIET_SECONDS = 5          # the 1-minute countdown only starts once the sensor has been quiet this long;
-                                # any new vibration before or during the countdown restarts this wait
 GAS_REARM_RATIO = 0.9         # after Reset alarm, gas must fall below this fraction of the threshold...
 GAS_REARM_SECONDS = 5         # ...and stay there this many seconds before it can alarm again
 VIB_HOLD_SECONDS = 3          # keep "vibration detected" on screen this long

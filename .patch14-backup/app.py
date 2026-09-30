@@ -61,7 +61,7 @@ lock = threading.Lock()
 
 # ----------------------------------------------------------------- settings
 def load_settings():
-    s = {"threshold": config.DEFAULT_GAS_THRESHOLD, "armed_gas": True, "armed_vib": True}
+    s = {"threshold": config.DEFAULT_GAS_THRESHOLD, "armed": True}
     try:
         with open(SETTINGS_PATH) as f:
             d = json.load(f)
@@ -74,10 +74,7 @@ def load_settings():
                 s["threshold"] = t
         except (TypeError, ValueError):
             pass
-        # gas and vibration used to share one "armed" flag (pre patch14 settings.json): seed both from it once.
-        legacy_armed = bool(d.get("armed", True))
-        s["armed_gas"] = bool(d.get("armed_gas", legacy_armed))
-        s["armed_vib"] = bool(d.get("armed_vib", legacy_armed))
+        s["armed"] = bool(d.get("armed", True))
     return s
 
 
@@ -175,22 +172,6 @@ def init_db():
         c.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
         c.execute("DELETE FROM alerts WHERE ts < ?", (cutoff,))
         c.commit()
-        load_series_from_db(c)
-
-
-def load_series_from_db(c):
-    """Fill the in-memory series (Live page graphs) from the last GRAPH_POINTS readings on disk,
-    so a restart of app.py does not show blank graphs on the Live page. History already reads the
-    database directly and was never affected by this."""
-    try:
-        c.row_factory = sqlite3.Row
-        rows = c.execute(
-            "SELECT ts, gas, vib FROM readings ORDER BY ts DESC LIMIT ?",
-            (config.GRAPH_POINTS,)).fetchall()
-        for r in reversed(rows):
-            series.append({"t": float(r["ts"]), "gas": r["gas"], "vib": int(r["vib"] or 0)})
-    except Exception as e:
-        print("[db] could not load previous readings into the live graph:", e)
 
 
 # ---- batched logging: one commit per LOG_FLUSH_SECONDS instead of one connection + commit per reading
@@ -371,8 +352,7 @@ ctrl = {"buzzer": "auto", "led": "auto", "muted": False,
         "gas_latch": False,   # gas alarm is latched until "Reset alarm"
         "gas_ack": False,     # alarm was reset while gas was high: wait until the level has dropped once
         "vib_ack": 0.0,       # vibration up to this moment is ignored (Reset alarm, timeout, or while disarmed)
-        "vib_active": False,  # vibration alarm is on right now (buzzer/LED/pop-up), regardless of the countdown below
-        "vib_start": 0.0,     # 0 = the 1-min countdown is not running yet; >0 = countdown running, started at this time
+        "vib_start": 0.0,     # when the running vibration alarm started (0 = no vibration alarm)
         "reset_gen": 0,       # +1 on every "Reset alarm": lets the sensor loop see a reset that happened mid-pass
         "vib_wait": False,    # after Reset / 1-min timeout: vibration is ignored until the sensor has been quiet for a while
         "gas_ok_since": None, # since when the gas has been well below the threshold (used to re-arm after Reset)
@@ -384,7 +364,7 @@ state = {
     "warmup_left": config.WARMUP_SECONDS, "buzzer_on": False, "led_on": False,
     "buzzer_mode": "auto", "led_mode": "auto", "muted": False, "errors": [],
     "last_alert": None, "last_email": None,
-    "armed_gas": settings["armed_gas"], "armed_vib": settings["armed_vib"], "last_vib": None,
+    "armed": settings["armed"], "last_vib": None,
     "email_status": "Email alerts are off" if not config.EMAIL_ENABLED else "No email sent yet",
     "email_enabled": config.EMAIL_ENABLED, "simulation": SIMULATION,
     "uptime": 0, "ts": time.time(),
@@ -474,10 +454,9 @@ def sensor_loop():
                 my_gen = ctrl["reset_gen"]
                 thr = settings["threshold"]
                 warm = 0 if (SIMULATION and ctrl.get("sim_skip_warmup")) else warmup_left(now)
-                armed_gas = settings["armed_gas"]
-                armed_vib = settings["armed_vib"]
-                gas_hit = armed_gas and gas is not None and warm == 0 and gas > thr
-                if not armed_gas:
+                armed = settings["armed"]
+                gas_hit = armed and gas is not None and warm == 0 and gas > thr
+                if not armed:
                     ctrl["gas_latch"] = ctrl["gas_ack"] = False
                 if gas is not None:
                     # re-arm after Reset only when the gas is clearly below the threshold and STAYS there
@@ -491,48 +470,31 @@ def sensor_loop():
                         ctrl["gas_ok_since"] = None
                 if gas_hit and not ctrl["gas_ack"]:
                     ctrl["gas_latch"] = True        # latched: stays on until "Reset alarm" is pressed
-                gas_alarm = bool(armed_gas and ctrl["gas_latch"])
+                gas_alarm = bool(armed and ctrl["gas_latch"])
                 if gas is not None and gas <= thr * 0.7:
                     ctrl["warn_ack"] = False        # gas is really low again: warnings work normally again
-                gas_warn = armed_gas and gas is not None and warm == 0 and gas > thr * 0.7 and not ctrl["warn_ack"]
-                # vibration: the alarm turns on immediately on the first (un-ignored) vibration pulse, exactly
-                # as before (buzzer/LED/pop-up are not delayed). What changed is the 1-minute auto-clear timer:
-                # it does NOT start counting down while the sensor keeps shaking. It only starts once the sensor
-                # has been quiet for VIB_QUIET_SECONDS; a new pulse before or during the countdown cancels it and
-                # the quiet wait starts over. The alarm turns off when a full countdown finishes uninterrupted,
-                # or on "Reset alarm", or while disarmed.
+                gas_warn = armed and gas is not None and warm == 0 and gas > thr * 0.7 and not ctrl["warn_ack"]
+                # vibration: the alarm starts on the first vibration and ends on "Reset alarm" or
+                # VIB_ALARM_HOLD seconds after it STARTED (more vibration does not extend it).
+                # Disarmed: measured, never alarms, and old vibration is thrown away.
                 hold = config.VIB_ALARM_HOLD
                 settle = getattr(config, "VIB_SETTLE_SECONDS", 2.0)
-                quiet_needed = getattr(config, "VIB_QUIET_SECONDS", 5.0)
-                if not armed_vib:
-                    ctrl["vib_active"] = False
+                if not armed:
                     ctrl["vib_start"] = 0.0
                     ctrl["vib_ack"] = now
                     ctrl["vib_wait"] = True
-                else:
-                    if ctrl["vib_start"] and now - ctrl["vib_start"] >= hold:
-                        # a full, uninterrupted 60 s quiet countdown finished: alarm off
-                        ctrl["vib_active"] = False
-                        ctrl["vib_start"] = 0.0
-                        ctrl["vib_ack"] = now
-                        ctrl["vib_wait"] = True     # a sensor that is STILL vibrating must not restart the alarm at once
-                    if ctrl["vib_wait"]:
-                        ctrl["vib_ack"] = max(ctrl["vib_ack"], last_vib)   # vibration seen while waiting is thrown away
-                        if now - last_vib >= settle:
-                            ctrl["vib_wait"] = False   # quiet long enough: only NEW vibration may alarm now
-                    if not ctrl["vib_wait"] and not ctrl["vib_active"] and last_vib > ctrl["vib_ack"]:
-                        ctrl["vib_active"] = True      # alarm on now; the countdown below only starts once it is quiet
-                        ctrl["vib_start"] = 0.0
-                    if ctrl["vib_active"]:
-                        quiet_for = now - last_vib
-                        if quiet_for < quiet_needed:
-                            ctrl["vib_start"] = 0.0     # still shaking (or too recent): countdown must not run yet
-                        elif not ctrl["vib_start"]:
-                            # just became quiet for long enough: start the countdown from the moment that happened,
-                            # not from "now", so the full 60 s is not shortened/lengthened by the sensor loop's tick
-                            ctrl["vib_start"] = last_vib + quiet_needed
-                vib_alarm = bool(armed_vib and ctrl["vib_active"])
-                vib_left = max(0, int(math.ceil(hold - (now - ctrl["vib_start"])))) if (vib_alarm and ctrl["vib_start"]) else (hold if vib_alarm else 0)
+                if ctrl["vib_start"] and now - ctrl["vib_start"] >= hold:
+                    ctrl["vib_start"] = 0.0         # 1 minute is up
+                    ctrl["vib_ack"] = now
+                    ctrl["vib_wait"] = True         # a sensor that is STILL vibrating must not restart the alarm at once
+                if ctrl["vib_wait"]:
+                    ctrl["vib_ack"] = max(ctrl["vib_ack"], last_vib)   # vibration seen while waiting is thrown away
+                    if now - last_vib >= settle:
+                        ctrl["vib_wait"] = False    # quiet long enough: only NEW vibration may alarm now
+                if armed and not ctrl["vib_wait"] and not ctrl["vib_start"] and last_vib > ctrl["vib_ack"]:
+                    ctrl["vib_start"] = now
+                vib_alarm = bool(armed and ctrl["vib_start"])
+                vib_left = max(0, int(math.ceil(hold - (now - ctrl["vib_start"])))) if vib_alarm else 0
                 alarm = gas_alarm or vib_alarm
                 if not alarm:
                     ctrl["muted"] = False       # mute lasts until the alarm ends
@@ -562,8 +524,8 @@ def sensor_loop():
                 status = "danger"
             elif errors:
                 status = "error"
-            elif not armed_gas and not armed_vib:
-                status = "disarmed"      # only when BOTH sensors are off; with one still armed, its own status applies
+            elif not armed:
+                status = "disarmed"
             elif warm > 0:
                 status = "warmup"
             elif gas_warn:
@@ -582,7 +544,7 @@ def sensor_loop():
                     threshold=thr, warmup_left=int(math.ceil(warm)),
                     buzzer_on=buzzer_on, led_on=led_on, buzzer_mode=bz_mode,
                     led_mode=led_mode, muted=muted, errors=errors,
-                    uptime=int(now - START_TIME), ts=now, armed_gas=armed_gas, armed_vib=armed_vib,
+                    uptime=int(now - START_TIME), ts=now, armed=armed,
                     last_vib=round(last_vib, 1) if last_vib else None,
                     gas_alarm=gas_alarm, vib_alarm=vib_alarm, vib_left=vib_left)
                 series.append({"t": round(now, 1), "gas": gas, "vib": int(vibration)})
@@ -736,21 +698,11 @@ async def control(request: Request):
     elif action == "reset":
         with lock:
             ctrl.update(buzzer="auto", led="auto", muted=False)
-    elif action in ("arm", "disarm", "arm_gas", "disarm_gas", "arm_vib", "disarm_vib"):
+    elif action in ("arm", "disarm"):
         with lock:
-            disarming_anything = False
-            if action in ("arm", "disarm"):                       # old action: both sensors together
-                settings["armed_gas"] = settings["armed_vib"] = action == "arm"
-                disarming_anything = action == "disarm"
-            elif action in ("arm_gas", "disarm_gas"):
-                settings["armed_gas"] = action == "arm_gas"
-                disarming_anything = action == "disarm_gas"
-            else:
-                settings["armed_vib"] = action == "arm_vib"
-                disarming_anything = action == "disarm_vib"
-            state["armed_gas"] = settings["armed_gas"]
-            state["armed_vib"] = settings["armed_vib"]
-            if disarming_anything:
+            settings["armed"] = action == "arm"
+            state["armed"] = settings["armed"]
+            if action == "disarm":
                 ctrl["muted"] = False
         save_settings()
     elif action == "reset_alarm":
@@ -761,8 +713,7 @@ async def control(request: Request):
             ctrl["gas_ack"] = g_prev is not None and g_prev > settings["threshold"] * getattr(config, "GAS_REARM_RATIO", 0.9)
             ctrl["gas_ok_since"] = None
             ctrl["reset_gen"] += 1
-            ctrl["vib_active"] = False       # vibration alarm off right now
-            ctrl["vib_start"] = 0.0
+            ctrl["vib_start"] = 0.0         # vibration alarm off right now
             # vibration up to now no longer counts, and new vibration only counts once the sensor has been quiet
             # for VIB_SETTLE_SECONDS (the button press itself shakes the sensor; a stuck sensor must not re-alarm)
             ctrl["vib_ack"] = time.time()
