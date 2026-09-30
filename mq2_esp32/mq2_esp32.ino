@@ -27,7 +27,7 @@
 // ============================ EDIT THESE ============================
 const char* WIFI_SSID  = "HUAWEI-z3UH";                        // 2.4 GHz network only
 const char* WIFI_PASS  = "NargatanFMLY";
-const char* SERVER_URL = "http://192.168.18.87:5000/api/esp32";    // Pi IP from: hostname -I
+const char* SERVER_URL = "http://10.120.212.181:5000/api/esp32";    // Pi IP from: hostname -I
 const char* API_KEY    = "act4embed";                             // = ESP32_TOKEN in config.py
 // ====================================================================
 
