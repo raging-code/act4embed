@@ -70,8 +70,11 @@
     if (!force && (busy || resetting || document.hidden || Date.now() - fedAt < 2500)) return;
     const my = gen; let d = null; busy = true;
     try {
-      const r = await fetch('/data?since=1e18', { cache: 'no-store' });
-      if (r.ok) d = await r.json();
+      const c = new AbortController(), id = setTimeout(() => c.abort(), 6000);
+      try {
+        const r = await fetch('/data?since=1e18', { cache: 'no-store', signal: c.signal });
+        if (r.ok) d = await r.json();
+      } finally { clearTimeout(id); }
     } catch (e) { /* server unreachable: keep the current pop-up state */ }
     finally { busy = false; }
     // ignore answers that were requested before the reset button was pressed

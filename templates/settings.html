@@ -4,11 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Settings - Gas & Vibration Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="icon" href="data:,">
+<script type="speculationrules">{"prefetch":[{"where":{"selector_matches":"nav a"},"eagerness":"moderate"}]}</script>
+<link rel="stylesheet" href="{{ asset('style.css') }}">
 </head>
 <body data-s="safe">
+<script>try{var b=document.body,k='gv-status',l=sessionStorage.getItem(k);if(l)b.dataset.s=l;new MutationObserver(function(){var s=b.dataset.s;if(s!==l&&s!=='error'){l=s;try{sessionStorage.setItem(k,s)}catch(e){}}}).observe(b,{attributes:true,attributeFilter:['data-s']})}catch(e){}</script>
 <header>
   <span class="brand">Gas & Vibration Monitor</span>
   <nav aria-label="Pages"><a href="/">Live</a><a href="/history">History</a><a href="/settings" aria-current="page">Settings</a></nav>
@@ -73,7 +78,12 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let busy = false;
+let busy = false, hold = 0;
+async function getJSON(url, ms) {        // gives up after ms: a dropped Wi-Fi link can never freeze the page
+  const c = new AbortController(), id = setTimeout(() => c.abort(), ms);
+  try { const r = await fetch(url, { cache: 'no-store', signal: c.signal }); if (!r.ok) throw new Error(r.status); return await r.json(); }
+  finally { clearTimeout(id); }
+}
 
 async function send(action, value) {
   try {
@@ -85,8 +95,10 @@ async function send(action, value) {
 
 function sync(d) {
   document.body.dataset.s = d.status;
-  document.querySelectorAll('[data-a=buzzer]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.buzzer_mode));
-  document.querySelectorAll('[data-a=led]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.led_mode));
+  if (Date.now() >= hold) {
+    document.querySelectorAll('[data-a=buzzer]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.buzzer_mode));
+    document.querySelectorAll('[data-a=led]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === d.led_mode));
+  }
   $('mutedNote').hidden = !d.muted;
   if (document.activeElement !== $('thrRange') && document.activeElement !== $('thrNum')) { $('thrRange').value = d.threshold; $('thrNum').value = d.threshold; }
   $('emailStatus').textContent = d.email_status + (d.last_email ? ' (' + new Date(d.last_email * 1000).toLocaleTimeString() + ')' : '');
@@ -96,9 +108,7 @@ async function poll() {
   if (busy || document.hidden) return; busy = true;
   const g = window.alarmGen ? window.alarmGen() : 0;
   try {
-    const r = await fetch('/data?since=1e18', { cache: 'no-store' });
-    if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
+    const d = await getJSON('/data?since=1e18', 6000);
     if (window.alarmFeed) window.alarmFeed(d, g);
     sync(d);
   } catch (e) { document.body.dataset.s = 'error'; $('emailStatus').textContent = 'Cannot reach the Raspberry Pi.'; }
@@ -126,7 +136,11 @@ async function saveEmail() {
   } catch (e) { $('emMsg').textContent = 'Cannot reach the Raspberry Pi.'; return false; }
 }
 
-document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => send(b.dataset.a, b.dataset.v));
+document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
+  hold = Date.now() + 1500;
+  document.querySelectorAll('[data-a="' + b.dataset.a + '"]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  send(b.dataset.a, b.dataset.v);
+});
 $('muteBtn').onclick = () => send('mute'); $('resetBtn').onclick = () => send('reset');
 $('thrRange').oninput = () => $('thrNum').value = $('thrRange').value;
 $('thrNum').oninput = () => $('thrRange').value = $('thrNum').value;
@@ -139,6 +153,6 @@ if ($('simGas')) { $('simGas').onclick = () => send('sim_gas'); $('simVib').oncl
 loadEmail(); poll(); setInterval(poll, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 </script>
-<script src="/static/alarm.js?v=11"></script>
+<script src="{{ asset('alarm.js') }}"></script>
 </body>
 </html>

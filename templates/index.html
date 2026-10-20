@@ -4,18 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gas & Vibration Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="icon" href="data:,">
+<script type="speculationrules">{"prefetch":[{"where":{"selector_matches":"nav a"},"eagerness":"moderate"}]}</script>
+<link rel="stylesheet" href="{{ asset('style.css') }}">
 </head>
 <body data-s="warmup">
+<script>try{var b=document.body,k='gv-status',l=sessionStorage.getItem(k);if(l)b.dataset.s=l;new MutationObserver(function(){var s=b.dataset.s;if(s!==l&&s!=='error'){l=s;try{sessionStorage.setItem(k,s)}catch(e){}}}).observe(b,{attributes:true,attributeFilter:['data-s']})}catch(e){}</script>
 <header>
   <span class="brand">Gas & Vibration Monitor</span>
   <nav aria-label="Pages"><a href="/" aria-current="page">Live</a><a href="/history">History</a><a href="/settings">Settings</a></nav>
   {% if sim %}<span class="demo">Simulation mode</span>{% endif %}
 </header>
 <main>
-  {% if sim %}<div class="banner">Simulation mode: vibration, LED and buzzer are simulated. The gas value comes from the ESP32 when it is connected, otherwise it is fake. Use the test buttons in Settings.</div>{% endif %}
+  {% if sim %}<div class="banner">Simulation mode: vibration, LED and buzzer are simulated. The gas value comes from the ADS1115 when it is connected, otherwise it is fake. Use the test buttons in Settings.</div>{% endif %}
   <div id="errors" class="banner" hidden role="alert"><span>Sensor problem</span><ul id="errorList"></ul></div>
 
   <section aria-live="polite" class="hero">
@@ -35,8 +40,8 @@
         </div>
         <div>
           <p class="muted">Sensor voltage: <span id="gasVolt">--</span> V</p>
-          <p class="muted">Source: <span id="gasSrc">--</span> &middot; raw ADC <span id="gasRaw">--</span> of 4095</p>
-          <p class="muted">Clean air baseline: <span id="cleanAir">--</span></p>
+          <p class="muted">Source: <span id="gasSrc">--</span> &middot; raw ADS1115 <span id="gasRaw">--</span> of 32767 (<span id="gasMv">--</span> mV at the pin)</p>
+          <p class="muted">Clean air baseline: <span id="cleanAir">--</span> <button class="btn" id="calBtn" type="button" onclick="control(window.__cal ? 'calibrate_cancel' : 'calibrate')">Calibrate</button></p><!-- ads1115-patch -->
         </div>
       </div>
       <div class="gph">
@@ -66,6 +71,11 @@
 
 <script>
 const $ = id => document.getElementById(id);
+async function getJSON(url, ms) {        // gives up after ms: a dropped Wi-Fi link can never freeze the live updates
+  const c = new AbortController(), id = setTimeout(() => c.abort(), ms);
+  try { const r = await fetch(url, { cache: 'no-store', signal: c.signal }); if (!r.ok) throw new Error(r.status); return await r.json(); }
+  finally { clearTimeout(id); }
+}
 function setText(id, v) { const e = $(id); v = String(v); if (e.textContent !== v) e.textContent = v; }   // no re-layout when unchanged
 let errKey = '', drawnThr = null;
 const S = [];                     // every sample: { t: time, g: gas or null, v: vibration 0/1 }
@@ -313,7 +323,8 @@ document.querySelectorAll('.zb').forEach(b => {
     if (k === 'in') setZoom(zoom * 1.5, a); else if (k === 'out') setZoom(zoom / 1.5, a); else goLive();
   };
 });
-window.addEventListener('resize', () => redraw());
+let rz = 0;                                            // resize fires many times per frame: redraw once per frame
+window.addEventListener('resize', () => { if (!rz) rz = requestAnimationFrame(() => { rz = 0; redraw(); }); });
 
 /* ---------- live data ---------- */
 function render(d) {
@@ -351,10 +362,13 @@ function render(d) {
   $('gasTick').style.left = 'calc(' + d.threshold / 1023 * 100 + '% - 1px)';
   setText('tickVal', d.threshold);
   setText('gasVolt', d.gas_voltage === null ? '--' : d.gas_voltage);
-  setText('gasSrc', d.gas_source === 'esp32' ? 'ESP32' + (d.esp32_ip ? ' (' + d.esp32_ip + ')' : '') : d.gas_source === 'simulated' ? 'simulated' : 'no ESP32 data');
+  setText('gasSrc', d.gas_source === 'ads1115' ? 'ADS1115 (A0)' : d.gas_source === 'simulated' ? 'simulated' : 'no ADS1115 data');
   setText('gasRaw', d.gas_raw == null ? '--' : d.gas_raw);
-  setText('cleanAir', d.esp32_calibrating ? 'calibrating (30 s), keep the sensor in clean air...'
-    : d.clean_air == null ? 'not calibrated (type C in the ESP32 serial monitor)' : d.clean_air + ' of 1023 (raw ' + d.clean_air_raw + ' of 4095)');
+  setText('gasMv', d.gas_mv == null ? '--' : d.gas_mv);
+  setText('cleanAir', d.calibrating ? 'calibrating, ' + d.cal_left + ' s left, keep the sensor in clean air...'
+    : d.clean_air == null ? 'not calibrated (press Calibrate while the sensor is in clean air)' : d.clean_air + ' of 1023 (' + d.clean_air_mv + ' mV)');
+  window.__cal = !!d.calibrating;
+  { const cb = $('calBtn'); if (cb) cb.textContent = d.calibrating ? 'Cancel' : 'Calibrate'; }
 
   setText('vibState', d.vibration ? 'Vibration detected' : 'No vibration');
   setText('vibLast', d.last_vib ? ago(d.ts - d.last_vib) : 'none since the app started');
@@ -376,9 +390,7 @@ async function poll() {
   let ok = false;
   const g = window.alarmGen ? window.alarmGen() : 0;
   try {
-    const r = await fetch('/data?since=' + since, { cache: 'no-store' });
-    if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
+    const d = await getJSON('/data?since=' + since, 6000);
     if (window.alarmFeed) window.alarmFeed(d, g);  // pop-up + page colour from the same answer (alarm.js does not ask again)
     render(d);
     ok = true;
@@ -401,6 +413,6 @@ $('armVibBtn').onclick = () => { $('armVibBtn').disabled = true; control(armedVi
 poll();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 </script>
-<script src="/static/alarm.js?v=11"></script>
+<script src="{{ asset('alarm.js') }}"></script>
 </body>
 </html>

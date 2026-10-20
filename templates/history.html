@@ -4,11 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>History - Gas & Vibration Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="icon" href="data:,">
+<script type="speculationrules">{"prefetch":[{"where":{"selector_matches":"nav a"},"eagerness":"moderate"}]}</script>
+<link rel="stylesheet" href="{{ asset('style.css') }}">
 </head>
 <body data-s="safe">
+<script>try{var b=document.body,k='gv-status',l=sessionStorage.getItem(k);if(l)b.dataset.s=l;new MutationObserver(function(){var s=b.dataset.s;if(s!==l&&s!=='error'){l=s;try{sessionStorage.setItem(k,s)}catch(e){}}}).observe(b,{attributes:true,attributeFilter:['data-s']})}catch(e){}</script>
 <header>
   <span class="brand">Gas & Vibration Monitor</span>
   <nav aria-label="Pages"><a href="/">Live</a><a href="/history" aria-current="page">History</a><a href="/settings">Settings</a></nav>
@@ -188,10 +193,12 @@ function hoverTip(sc, lookup) {
   const tip = document.createElement('div'), gl = document.createElement('div');
   tip.className = 'gtip'; gl.className = 'gline'; tip.hidden = gl.hidden = true;
   card.append(gl, tip);
-  const hide = () => { tip.hidden = gl.hidden = true; };
-  sc.addEventListener('pointerleave', hide);
-  sc.addEventListener('pointermove', e => {
-    if (e.pointerType !== 'mouse' || sc.classList.contains('drag')) return hide();
+  let hev = null, hraf = 0;                          // pointer moves are handled once per frame
+  const hide = () => { hev = null; tip.hidden = gl.hidden = true; };
+  const move = () => {
+    hraf = 0;
+    const e = hev;
+    if (!e || e.pointerType !== 'mouse' || sc.classList.contains('drag')) return hide();
     const r = sc.getBoundingClientRect(), c = card.getBoundingClientRect();
     const txt = lookup(e.clientX - r.left + sc.scrollLeft, sc.scrollWidth);
     if (!txt) return hide();
@@ -199,7 +206,9 @@ function hoverTip(sc, lookup) {
     const x = e.clientX - c.left, w = tip.offsetWidth / 2 + 8;
     gl.style.left = x + 'px'; gl.style.top = (r.top - c.top) + 'px'; gl.style.height = r.height + 'px';
     tip.style.left = Math.min(Math.max(x, w), c.width - w) + 'px'; tip.style.top = (r.top - c.top + 8) + 'px';
-  });
+  };
+  sc.addEventListener('pointerleave', hide);
+  sc.addEventListener('pointermove', e => { hev = e; if (!hraf) hraf = requestAnimationFrame(move); });
 }
 hoverTip(SC[0], (xc, tw) => {
   if (!PTS.length) return null;
@@ -215,13 +224,18 @@ document.querySelectorAll('.zb').forEach(b => {
 });
 window.addEventListener('resize', showRange);
 
-async function load() {
+let loadCtl = null;                                // a newer request cancels the older one: a slow answer can never overwrite a fresh one
+async function load(quiet) {
   const q = query();
   $('csv').href = '/export.csv?' + q;
+  if (loadCtl) loadCtl.abort();
+  const ctl = loadCtl = new AbortController();
+  if (!quiet) document.querySelector('main').setAttribute('aria-busy', 'true');
   try {
-    const r = await fetch('/api/history?' + q, { cache: 'no-store' });
+    const r = await fetch('/api/history?' + q, { cache: 'no-store', signal: ctl.signal });
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
+    if (ctl !== loadCtl) return;
     draw(d.chart, d.threshold);
     drawVib(d.chart);
     showRange();
@@ -230,14 +244,15 @@ async function load() {
     $('sAvg').textContent = d.stats.avg_gas ?? '--'; $('sVib').textContent = d.stats.vib_samples ?? 0; $('sAlerts').textContent = d.alerts.length;
     $('alerts').replaceChildren(...d.alerts.map(a => { const tr = document.createElement('tr'); cell(tr, tm(a.ts)); cell(tr, a.kind); cell(tr, a.message); cell(tr, a.email_sent ? 'Sent' : '-'); return tr; }));
     $('rows').replaceChildren(...d.rows.map(x => { const tr = document.createElement('tr'); cell(tr, tm(x.ts)); cell(tr, x.gas); cell(tr, x.vib ? 'Detected' : 'No'); cell(tr, x.status); return tr; }));
-  } catch (e) { $('empty').hidden = false; $('empty').textContent = 'Could not load history: ' + e.message; }
+  } catch (e) { if (e.name === 'AbortError') return; $('empty').hidden = false; $('empty').textContent = 'Could not load history: ' + e.message; }
+  finally { if (ctl === loadCtl) { loadCtl = null; document.querySelector('main').removeAttribute('aria-busy'); } }
 }
 
 $('preset').onchange = () => { $('customBox').hidden = $('preset').value !== 'custom'; if ($('preset').value !== 'custom') { resetZoom(); load(); } };
 $('apply').onclick = () => { resetZoom(); load(); };
-load(); setInterval(() => { if (!document.hidden && $('preset').value !== 'custom') load(); }, 30000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && $('preset').value !== 'custom') load(); });
+load(); setInterval(() => { if (!document.hidden && $('preset').value !== 'custom') load(true); }, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && $('preset').value !== 'custom') load(true); });
 </script>
-<script src="/static/alarm.js?v=11"></script>
+<script src="{{ asset('alarm.js') }}"></script>
 </body>
 </html>

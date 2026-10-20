@@ -17,12 +17,18 @@ BUZZER_PIN = 22         # Active buzzer (+)
 VIB_ACTIVE_HIGH = True  # Book: DO is HIGH when vibration is detected.
                         # If your module is reversed (LOW on vibration) set False.
 
-# ---------------- MQ-2 gas sensor via MCP3008 ADC (SPI0) ----------------
-# MCP3008: CLK->GPIO11, DOUT->GPIO9, DIN->GPIO10, CS->GPIO8 (CE0)
-GAS_ADC_CHANNEL = 0     # MQ-2 AO goes to MCP3008 CH0
-SPI_DEVICE = 0          # 0 = CE0 (GPIO8), 1 = CE1 (GPIO7)
-# MQ-2 AO can reach 5 V but the MCP3008 runs at 3.3 V. The wiring guide uses a
-# voltage divider (10k top + 20k bottom) -> ADC sees 2/3 of the sensor voltage.
+# ---------------- MQ-2 gas sensor via ADS1115 ADC (I2C)  (ads1115-patch) ----------------
+# ADS1115: VDD->3.3V, GND->GND, SCL->GPIO3 (pin 5), SDA->GPIO2 (pin 3), ADDR->GND (address 0x48),
+# A0 -> MQ-2 AO through the 10k/20k divider. Enable I2C: sudo raspi-config -> Interface Options -> I2C.
+ADS_I2C_BUS = 1               # /dev/i2c-1 (the Pi header pins 3 and 5)
+ADS_ADDRESS = 0x48            # ADDR->GND 0x48, ->VDD 0x49, ->SDA 0x4A, ->SCL 0x4B
+ADS_CHANNEL = 0               # MQ-2 is on A0 (0-3)
+ADS_OVERSAMPLE = 8            # conversions averaged per reading (128 SPS, about 70 ms in total)
+# The ADS1115 runs at +-4.096 V (0.125 mV per count). The dashboard keeps its old 0-1023 scale:
+# 0 mV at the ADS1115 pin = 0, ADC_FULLSCALE_MV at the pin = 1023.
+ADC_FULLSCALE_MV = 3300
+# MQ-2 AO can reach 5 V but the ADS1115 is powered from 3.3 V (its inputs must stay below VDD + 0.3 V).
+# The wiring guide uses a voltage divider (10k top + 20k bottom) -> the ADS1115 sees 2/3 of the sensor voltage.
 # If you do NOT use a divider (not recommended) set this to 1.0.
 ADC_DIVIDER_RATIO = 1.5
 
@@ -60,10 +66,5 @@ EMAIL_COOLDOWN = 300          # at most one alert email every 5 minutes
 HOST = "0.0.0.0"              # reachable from other devices on the network
 PORT = 5000
 
-# ---------------- ESP32 (the MQ-2 is wired to the ESP32, not to the Pi) ----------------
-# fastapi-esp32
-ESP32_ADC_MAX = 4095          # ESP32 ADC is 12-bit (0-4095). The dashboard rescales it to 0-1023.
-ESP32_TIMEOUT = 5             # seconds without a packet before the gas sensor is reported as failed
-ESP32_TOKEN = "act4embed"     # must equal API_KEY in the ESP32 sketch ("" turns the check off)
-# GAS_ADC_CHANNEL / SPI_DEVICE above are no longer used (there is no MCP3008 any more).
-# ADC_DIVIDER_RATIO is still used for the "Sensor voltage" number: keep the 10k + 20k divider.
+# ---------------- Clean-air calibration (done on the Pi, "Calibrate" button on the Live page) ----------------
+CAL_SECONDS = 30              # how long the clean-air average is recorded

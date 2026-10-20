@@ -5,7 +5,7 @@ body[data-s=warning]{--bg:#5c3a04;--ink:#fff3d6}
 body[data-s=danger]{--bg:#b3121b;--ink:#fff}
 body[data-s=warmup]{--bg:#23384a;--ink:#e6f1fb}
 body[data-s=error]{--bg:#3f2a5a;--ink:#f1e8ff}
-body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font:400 1rem/1.5 Figtree,"Segoe UI",system-ui,sans-serif;transition:background .8s,color .8s}
+body{margin:0;min-height:100vh;min-height:100dvh;background:var(--bg);color:var(--ink);font:400 1rem/1.5 Figtree,"Segoe UI",system-ui,sans-serif;transition:background .8s,color .8s}
 body::before{content:"";position:fixed;inset:0;z-index:-1;background:#8f0d15;opacity:0;pointer-events:none}
 body[data-s=danger]::before{animation:pulse 1.8s ease-in-out infinite;will-change:opacity}
 @keyframes pulse{50%{opacity:1}}
@@ -164,3 +164,16 @@ body.alarming{overflow:hidden}
 .areset:active{transform:scale(.97)}
 .areset:focus-visible{outline:3px solid #ff8589;outline-offset:3px}
 @media(prefers-reduced-motion:reduce){.alarm,.acard,.aico::after{animation:none}}
+
+/* perf-smooth: smoother navigation, steadier layout, snappier touch */
+html{scrollbar-gutter:stable}
+@media(prefers-reduced-motion:no-preference){
+  @view-transition{navigation:auto}
+  ::view-transition-group(root){animation-duration:.18s}
+}
+.btn,.seg button,.areset,nav a{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.btn,.seg button{transition:transform .12s ease}
+.btn:active:not(:disabled),.seg button:active{transform:scale(.97)}
+.gscroll{contain:layout}
+.card{transition:opacity .2s}
+main[aria-busy=true] .card{opacity:.7;transition-delay:.35s}

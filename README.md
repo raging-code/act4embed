@@ -1,7 +1,7 @@
 # Gas & Vibration Monitor - Raspberry Pi 5 + Flask
 Activity No. 4: Interfacing Gas and Vibration Sensor with Website
 
-MQ-2 gas sensor (through an MCP3008 ADC) + SW-420 vibration sensor + LED + buzzer,
+MQ-2 gas sensor (through an ADS1115 ADC) + SW-420 vibration sensor + LED + buzzer,
 a live web dashboard, email alerts (smtplib) and a logged history page.
 
 ## 1. Enable SPI (needed for the ADC)
@@ -72,23 +72,39 @@ Data is stored in `data/sensor.db` (SQLite). Delete the `data` folder to start f
 | Email failed | Use an App Password; check EMAIL_ENABLED, SMTP_USER, internet |
 | MQ-2 reads high at first | Normal. It needs a warm-up (allow several minutes for stable readings) |
 
-## ESP32 + FastAPI (replaces the MCP3008 and Flask)
-The server is now FastAPI (uvicorn); `python app.py` still starts it. Sections 1 and the MCP3008 rows of
-section 4 above no longer apply: there is no ADC on the Pi and SPI does not need to be enabled.
-The MQ-2 is wired to an ESP32 (sketch: mq2_esp32.ino), which sends its reading over Wi-Fi to
-`POST /api/esp32` once a second.
+## ADS1115 + FastAPI (replaces the MCP3008 and the ESP32)  <!-- ads1115-patch -->
+The server is FastAPI (uvicorn); `python app.py` starts it. The MQ-2 is read by an **ADS1115** (16-bit I2C ADC) that sits
+directly on the Pi: MQ-2 -> ADS1115 -> Raspberry Pi 5. Sections 1 and the MCP3008 rows of section 4 above no longer apply
+(SPI is not needed). The ESP32 sketch (mq2_esp32/) and the /api/esp32 endpoint are no longer used.
 
-    pip install -r requirements.txt        # fastapi, uvicorn, jinja2
+    sudo raspi-config                 ->  Interface Options  ->  I2C  ->  Yes   (then reboot)
+    sudo apt install -y i2c-tools
+    sudo i2cdetect -y 1               ->  should show  48
+    pip install -r requirements.txt   # fastapi, uvicorn, jinja2, smbus2
     python app.py
 
-ESP32 wiring (use an ADC1 pin: GPIO34. ADC2 pins do not work while Wi-Fi is on):
-| MQ-2 module | Connect to |
+ADS1115 wiring (the module is powered from **3.3 V** so the I2C lines are 3.3 V; the Pi pins are not 5 V tolerant):
+| ADS1115 pin | Connect to |
 |---|---|
-| VCC | ESP32 VIN / 5V pin (USB powered) |
-| GND | ESP32 GND (must be common) |
-| AO | 10k resistor -> junction -> ESP32 GPIO34; junction -> 20k (two 10k in series) -> GND |
-Optional: 100 nF capacitor from GPIO34 to GND for a steadier reading.
+| VDD | Pi 3.3V (pin 1) |
+| GND | Pi GND (pin 6) |
+| SCL | GPIO3 / SCL (pin 5) |
+| SDA | GPIO2 / SDA (pin 3) |
+| ADDR | GND (I2C address 0x48) |
+| A0 | MQ-2 AO **through the divider below** |
+| ALRT | not connected |
 
-In the sketch set WIFI_SSID, WIFI_PASS, SERVER_URL (`http://<pi-ip>:5000/api/esp32`, IP from `hostname -I`) and make
-API_KEY equal to ESP32_TOKEN in config.py. In the Arduino serial monitor (115200 baud) type C to record
-30 s of clean air; the mean becomes the clean-air baseline shown on the dashboard.
+MQ-2 module: VCC -> Pi 5V (pin 2), GND -> Pi GND (common with the ADS1115).
+AO -> 10k resistor -> junction (goes to ADS1115 A0) -> two 10k resistors in series (20k) -> GND.
+Keep the divider: the MQ-2 outputs up to 5 V, and the ADS1115 input must not exceed VDD + 0.3 V (3.6 V).
+The Pi software maps 0-3.3 V at A0 to the dashboard's 0-1023 scale, so the alarm threshold keeps its old meaning.
+
+Clean-air baseline: warm the MQ-2 up for a few minutes in clean air, then press **Calibrate** on the Live page
+(30 s, saved to data/calibration.json). Settings: ADS_* in config.py.
+
+| Symptom | Fix |
+|---|---|
+| `i2cdetect` shows no 48 | I2C not enabled, SDA/SCL swapped, no 3.3 V, or ADDR not on GND |
+| "Gas sensor error ... smbus2" | `pip install smbus2` (in the same venv) |
+| "... mV on A0 is too high" | Divider missing/wrong, or ADS1115 not powered from 3.3 V |
+| Gas value stuck at 0 | A0 wire or MQ-2 power; check ADS_CHANNEL |

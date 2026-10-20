@@ -1,5 +1,5 @@
 """
-Gas & Vibration Monitoring Dashboard - Raspberry Pi 5 + FastAPI (MQ-2 read by an ESP32)
+Gas & Vibration Monitoring Dashboard - Raspberry Pi 5 + FastAPI (MQ-2 read through an ADS1115)
 Run:  python app.py      then open  http://<pi-ip>:5000
 """
 import atexit
@@ -242,46 +242,131 @@ def log_reading(now, gas, vib, status):
 atexit.register(flush_readings)
 
 
-# ----------------------------------------------------------------- esp32 input
-# fastapi-esp32: the MQ-2 is wired to an ESP32 (12-bit ADC). The ESP32 POSTs its reading to
-# /api/esp32 every second; the sensor loop below reads the newest value from here.
-esp_lock = threading.Lock()
-esp32 = {"adc": None, "ts": 0.0, "clean_air": None, "calibrating": False,
-         "boot_ts": None, "ip": None, "rssi": None}
+# ----------------------------------------------------------------- ads1115 input  (ads1115-patch)
+# The MQ-2 analog output goes through a 10k/20k divider to A0 of an ADS1115 (16-bit I2C ADC) on the Pi.
+try:
+    from smbus2 import SMBus
+except Exception:
+    SMBus = None
+
+CAL_PATH = os.path.join(DATA_DIR, "calibration.json")
+gas_lock = threading.Lock()
+gas_info = {"raw": None, "mv": None, "ts": 0.0}
+cal = {"clean_mv": None, "active": False, "start": 0.0, "sum": 0.0, "n": 0}
+GAS_FRESH_SECONDS = 5
 
 
-def esp32_fresh(now=None):
-    """True if the ESP32 sent a reading within the last ESP32_TIMEOUT seconds."""
-    now = time.time() if now is None else now
-    with esp_lock:
-        return esp32["adc"] is not None and (now - esp32["ts"]) <= config.ESP32_TIMEOUT
+def load_calibration():
+    try:
+        with open(CAL_PATH) as f:
+            v = float(json.load(f).get("clean_mv"))
+        if 0 <= v <= 6000:
+            cal["clean_mv"] = v
+    except Exception:
+        pass
+
+
+def _save_calibration():
+    try:
+        with open(CAL_PATH, "w") as f:
+            json.dump({"clean_mv": cal["clean_mv"]}, f)
+    except OSError as e:
+        print("Could not save calibration:", e)
+
+
+load_calibration()
+
+
+def mv_to_counts(mv):
+    """Millivolts at the ADS1115 pin -> the dashboard's 0-1023 scale."""
+    return int(round(max(0, min(1023, mv * 1023 / config.ADC_FULLSCALE_MV))))
+
+
+def calibration_start():
+    with gas_lock:
+        cal.update(active=True, start=time.time(), sum=0.0, n=0)
+
+
+def calibration_cancel():
+    with gas_lock:
+        cal["active"] = False
+
+
+def _cal_feed(mv, now):
+    """Called with every gas reading: while calibrating, collect them; after CAL_SECONDS store the mean."""
+    with gas_lock:
+        if not cal["active"]:
+            return
+        cal["sum"] += mv
+        cal["n"] += 1
+        if now - cal["start"] < config.CAL_SECONDS:
+            return
+        cal["active"] = False
+        if cal["n"]:
+            cal["clean_mv"] = cal["sum"] / cal["n"]
+            _save_calibration()
+
+
+class ADS1115:
+    """Minimal single-shot ADS1115 driver (smbus2). +-4.096 V range, 128 SPS, single-ended AINx vs GND."""
+    LSB_MV = 4096.0 / 32768.0       # 0.125 mV per count
+
+    def __init__(self, bus, address, channel):
+        if SMBus is None:
+            raise RuntimeError("smbus2 is not installed (pip install smbus2)")
+        if channel not in (0, 1, 2, 3):
+            raise ValueError("ADS_CHANNEL must be 0-3")
+        self.address, self.io = address, threading.Lock()
+        # OS=1 start | MUX=100+ch | PGA=001 (+-4.096 V) | MODE=1 single-shot | DR=100 (128 SPS) | comparator off
+        self.cfg = 0x8000 | ((0x4 + channel) << 12) | (0x1 << 9) | 0x0100 | (0x4 << 5) | 0x0003
+        self.bus = SMBus(bus)
+        self.read_raw()             # fail now (and show it on the dashboard) if the chip does not answer
+
+    def _one(self):
+        self.bus.write_i2c_block_data(self.address, 0x01, [self.cfg >> 8, self.cfg & 0xFF])
+        deadline = time.time() + 0.25
+        while True:
+            time.sleep(0.009)       # one conversion takes 7.8 ms
+            hi, _lo = self.bus.read_i2c_block_data(self.address, 0x01, 2)
+            if hi & 0x80:           # OS bit = conversion finished
+                break
+            if time.time() > deadline:
+                raise RuntimeError("ADS1115 conversion timeout")
+        hi, lo = self.bus.read_i2c_block_data(self.address, 0x00, 2)
+        v = (hi << 8) | lo
+        return v - 65536 if v & 0x8000 else v
+
+    def read_raw(self, n=1):
+        with self.io:
+            vals = [self._one() for _ in range(max(1, n))]
+        return sum(vals) / len(vals)
+
+    def close(self):
+        try:
+            self.bus.close()
+        except Exception:
+            pass
 
 
 def warmup_left(now):
-    """Seconds of MQ-2 warm-up left. The heater starts when the ESP32 powers up, so
-    this follows the ESP32 uptime. Before the first packet it uses the app start."""
-    with esp_lock:
-        boot = esp32["boot_ts"]
-    ref = boot if boot is not None else START_TIME
-    return max(0.0, config.WARMUP_SECONDS - (now - ref))
+    """Seconds of MQ-2 warm-up left (the heater starts when the Pi powers it, so this follows app start)."""
+    return max(0.0, config.WARMUP_SECONDS - (now - START_TIME))
 
 
-def esp32_snapshot():
+def gas_snapshot():
     """Extra fields for /data (the Live page shows them)."""
     now = time.time()
-    with esp_lock:
-        e = dict(esp32)
-    fresh = e["adc"] is not None and (now - e["ts"]) <= config.ESP32_TIMEOUT
-    ca = e["clean_air"]
+    with gas_lock:
+        g, clean, active, start = dict(gas_info), cal["clean_mv"], cal["active"], cal["start"]
+    fresh = g["raw"] is not None and (now - g["ts"]) <= GAS_FRESH_SECONDS
     return {
-        "gas_source": "esp32" if fresh else ("simulated" if SIMULATION else "none"),
-        "gas_raw": e["adc"] if fresh else None,
-        "clean_air_raw": None if ca is None else round(ca, 1),
-        "clean_air": None if ca is None else int(round(ca * 1023 / config.ESP32_ADC_MAX)),
-        "esp32_calibrating": bool(e["calibrating"]) if fresh else False,
-        "esp32_ip": e["ip"],
-        "esp32_age": round(now - e["ts"], 1) if e["ts"] else None,
-        "esp32_rssi": e["rssi"],
+        "gas_source": "ads1115" if (fresh and not SIMULATION) else ("simulated" if (fresh and SIMULATION) else "none"),
+        "gas_raw": g["raw"] if fresh else None,
+        "gas_mv": g["mv"] if fresh else None,
+        "clean_air_mv": None if clean is None else round(clean, 1),
+        "clean_air": None if clean is None else mv_to_counts(clean),
+        "calibrating": bool(active),
+        "cal_left": max(0, int(math.ceil(config.CAL_SECONDS - (now - start)))) if active else 0,
     }
 
 
@@ -298,7 +383,7 @@ class Hardware:
         self.sim_gas_until = 0.0
         if SIMULATION:
             return
-        # gas: read by the ESP32 (see esp32 input section), no ADC on the Pi
+        self._init("gas", lambda: ADS1115(config.ADS_I2C_BUS, config.ADS_ADDRESS, config.ADS_CHANNEL))
         self._init("vib", lambda: DigitalInputDevice(
             config.VIB_PIN, pull_up=not config.VIB_ACTIVE_HIGH))
         self._init("led", lambda: LED(config.LED_PIN))
@@ -315,25 +400,30 @@ class Hardware:
             print(f"[hardware] {name} failed to initialise: {self.errors[name]}")
 
     def read_gas(self):
-        """Return the MQ-2 value as 0-1023, rescaled from the ESP32's 12-bit reading
-        (the ESP32 already averages many samples per second)."""
+        """Return the MQ-2 value as 0-1023 (ADS1115 millivolts at the pin, rescaled)."""
         now = time.time()
-        with esp_lock:
-            raw, ts = esp32["adc"], esp32["ts"]
-        if raw is not None and (now - ts) <= config.ESP32_TIMEOUT:
-            v = raw * 1023 / config.ESP32_ADC_MAX
-            if SIMULATION and now < self.sim_gas_until:
-                v += 450                # "Simulate gas leak" test button
-            return int(round(max(0, min(1023, v))))
-        if SIMULATION:                  # no ESP32 yet: fake data so the site can be tested
+        if SIMULATION:                  # no hardware: fake data so the site can be tested on a PC
             v = 180 + 25 * math.sin(now / 7) + random.uniform(-8, 8)
             if now < self.sim_gas_until:
-                v += 450
-            return int(max(0, min(1023, v)))
-        if raw is None:
-            raise RuntimeError("No data from the ESP32 yet (is it powered, on the same Wi-Fi, "
-                               "and is SERVER_URL in the sketch this computer's IP?)")
-        raise RuntimeError(f"ESP32 silent for {int(now - ts)} s (check its power and Wi-Fi)")
+                v += 450                # "Simulate gas leak" test button
+            v = max(0.0, min(1023.0, v))
+            mv = v * config.ADC_FULLSCALE_MV / 1023
+            with gas_lock:
+                gas_info.update(raw=int(round(mv / ADS1115.LSB_MV)), mv=round(mv, 1), ts=now)
+            _cal_feed(mv, now)
+            return int(round(v))
+        if self.gas is None:
+            raise RuntimeError(self.errors.get("gas", "ADS1115 not initialised") +
+                               " (check I2C is enabled, wiring and 'sudo i2cdetect -y 1' shows 48)")
+        raw = self.gas.read_raw(config.ADS_OVERSAMPLE)
+        mv = max(0.0, raw * ADS1115.LSB_MV)
+        if mv > config.ADC_FULLSCALE_MV + 300:
+            raise RuntimeError(f"{mv:.0f} mV on A{config.ADS_CHANNEL} is too high: check the 10k/20k divider "
+                               "and that the ADS1115 is powered from 3.3 V")
+        with gas_lock:
+            gas_info.update(raw=int(round(raw)), mv=round(mv, 1), ts=now)
+        _cal_feed(mv, now)
+        return mv_to_counts(mv)
 
     def read_vib(self):
         if SIMULATION:
@@ -625,11 +715,13 @@ app = FastAPI(title="Gas & Vibration Monitor", lifespan=lifespan)
 
 
 class CachedStatic(StaticFiles):
-    """Static files with a 1-day browser cache (the pages link them as ?v=N, so a new version is always fetched)."""
+    """Static files. A URL with ?v=<file modified time> (see asset() below) can never change, so the browser keeps it
+    for a year and never asks again. Without ?v= the browser re-checks with the ETag (a cheap 304)."""
     async def get_response(self, path, scope):
         resp = await super().get_response(path, scope)
         if resp.status_code in (200, 304):
-            resp.headers["Cache-Control"] = "public, max-age=86400"
+            versioned = b"v=" in scope.get("query_string", b"")
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "no-cache"
         return resp
 
 
@@ -637,6 +729,17 @@ class CachedStatic(StaticFiles):
 app.add_middleware(GZipMiddleware, minimum_size=1500, compresslevel=3)
 app.mount("/static", CachedStatic(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+
+def asset(name):
+    """/static/<name>?v=<modified time>: the URL changes by itself whenever the file changes."""
+    try:
+        return "/static/%s?v=%d" % (name, int(os.stat(os.path.join(BASE_DIR, "static", name)).st_mtime))
+    except OSError:
+        return "/static/" + name
+
+
+templates.env.globals["asset"] = asset
 
 
 async def get_json(request):
@@ -650,6 +753,11 @@ async def get_json(request):
 
 def bad(message, code=400):
     return JSONResponse({"ok": False, "error": message}, status_code=code)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204, headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -683,42 +791,8 @@ def data(since: str = "0"):
             new.append(p)
         new.reverse()
         out["series"] = new
-    out.update(esp32_snapshot())
+    out.update(gas_snapshot())
     return JSONResponse(out)
-
-
-@app.post("/api/esp32")
-async def api_esp32(request: Request):
-    """Called by the ESP32 sketch once per second."""
-    if config.ESP32_TOKEN:
-        key = request.headers.get("x-api-key", "")
-        if not hmac.compare_digest(key.encode("utf-8"), config.ESP32_TOKEN.encode("utf-8")):
-            return bad("missing or wrong X-API-Key (API_KEY in the sketch must equal ESP32_TOKEN in config.py)", 401)
-    d = await get_json(request)
-    try:
-        adc = int(round(float(d.get("adc"))))
-    except (TypeError, ValueError, OverflowError):
-        return bad("adc must be a number")
-    if not 0 <= adc <= config.ESP32_ADC_MAX:
-        return bad(f"adc must be 0-{config.ESP32_ADC_MAX}")
-
-    def num(key, lo, hi):
-        try:
-            v = float(d.get(key))
-        except (TypeError, ValueError, OverflowError):
-            return None
-        return v if lo <= v <= hi else None
-
-    now = time.time()
-    clean = num("clean_air", 0, config.ESP32_ADC_MAX)
-    uptime = num("uptime_s", 0, 10 ** 9)
-    rssi = num("rssi", -120, 0)
-    with esp_lock:
-        esp32.update(adc=adc, ts=now, clean_air=clean, calibrating=bool(d.get("calibrating")),
-                     boot_ts=None if uptime is None else now - uptime,
-                     ip=request.client.host if request.client else None,
-                     rssi=None if rssi is None else int(rssi))
-    return JSONResponse({"ok": True})
 
 
 @app.post("/control")
@@ -798,6 +872,10 @@ async def control(request: Request):
         threading.Thread(target=send_email, args=(
             "Test email from Gas & Vibration Monitor",
             "If you can read this, email alerts work."), daemon=True).start()
+    elif action == "calibrate":
+        calibration_start()
+    elif action == "calibrate_cancel":
+        calibration_cancel()
     elif action == "sim_gas" and SIMULATION:
         hw.sim_gas_until = time.time() + 10
         with lock:
@@ -929,10 +1007,10 @@ if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
     print("Mode:", "SIMULATION (Pi outputs faked)" if SIMULATION else "REAL SENSORS")
-    print("Gas sensor: MQ-2 on the ESP32 -> POST http://<this-ip>:%d/api/esp32" % config.PORT)
+    print("Gas sensor: MQ-2 -> ADS1115 (I2C bus %d, address 0x%02X, A%d)" % (config.ADS_I2C_BUS, config.ADS_ADDRESS, config.ADS_CHANNEL))
     print(f"Open on this device : http://localhost:{config.PORT}")
     print(f"Open from other PCs : http://{local_ip()}:{config.PORT}")
     print("=" * 60)
     # Run ONE process, no reload: a 2nd process would try to claim the same GPIO pins
-    # ("GPIO busy") and would have its own copy of the ESP32 readings.
+    # ("GPIO busy") and would have its own copy of the sensor readings.
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info", access_log=False)
