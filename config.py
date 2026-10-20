@@ -30,10 +30,12 @@ ADC_FULLSCALE_MV = 3300
 # MQ-2 AO can reach 5 V but the ADS1115 is powered from 3.3 V (its inputs must stay below VDD + 0.3 V).
 # The wiring guide uses a voltage divider (10k top + 20k bottom) -> the ADS1115 sees 2/3 of the sensor voltage.
 # If you do NOT use a divider (not recommended) set this to 1.0.
-ADC_DIVIDER_RATIO = 1.5
+ADC_DIVIDER_RATIO = 2.0       # 20k + 20k divider: the ADS1115 pin sees HALF of AO  (gas-relative-patch)
 
 # ---------------- Alarm logic ----------------
-DEFAULT_GAS_THRESHOLD = 400   # 0-1023 ADC counts. Change it on the dashboard.
+DEFAULT_GAS_THRESHOLD = 150   # 0-1023 ADC counts. Change it on the dashboard.
+GAS_RISE_COUNTS = 50          # after Calibrate: alarm when gas is this many counts above the clean-air level
+                              # (0 = off, use only the fixed threshold). Raise it if you get false alarms.  (gas-relative-patch)
 WARMUP_SECONDS = 120          # gas alarms are ignored while the MQ-2 heats up
 VIB_ALARM_HOLD = 60           # a vibration alarm turns off this many seconds after it STARTED (or on Reset alarm)
 VIB_RESET_GRACE = 3           # (no longer used since patch11, see VIB_SETTLE_SECONDS)

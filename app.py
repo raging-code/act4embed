@@ -282,6 +282,18 @@ def mv_to_counts(mv):
     return int(round(max(0, min(1023, mv * 1023 / config.ADC_FULLSCALE_MV))))
 
 
+def effective_threshold():
+    """Alarm level in 0-1023 counts (gas-relative-patch).
+    The saved threshold, but never higher than (calibrated clean-air level + GAS_RISE_COUNTS).
+    An MQ-2 baseline differs per sensor, so a fixed number (e.g. 400) may never be reached by alcohol or smoke."""
+    t = settings["threshold"]
+    rise = getattr(config, "GAS_RISE_COUNTS", 0)
+    clean = cal["clean_mv"]
+    if rise and clean is not None:
+        t = min(t, mv_to_counts(clean) + int(rise))
+    return max(1, int(t))
+
+
 def calibration_start():
     with gas_lock:
         cal.update(active=True, start=time.time(), sum=0.0, n=0)
@@ -562,7 +574,7 @@ def sensor_loop():
             # ---- decide alarm + outputs
             with lock:
                 my_gen = ctrl["reset_gen"]
-                thr = settings["threshold"]
+                thr = effective_threshold()     # gas-relative-patch
                 warm = 0 if (SIMULATION and ctrl.get("sim_skip_warmup")) else warmup_left(now)
                 armed_gas = settings["armed_gas"]
                 armed_vib = settings["armed_vib"]
@@ -832,7 +844,7 @@ async def control(request: Request):
             ctrl["gas_latch"] = False
             g_prev = state.get("gas")
             # ignore gas until it has fallen clearly below the threshold (and stayed there); if it is already low, nothing to ignore
-            ctrl["gas_ack"] = g_prev is not None and g_prev > settings["threshold"] * getattr(config, "GAS_REARM_RATIO", 0.9)
+            ctrl["gas_ack"] = g_prev is not None and g_prev > effective_threshold() * getattr(config, "GAS_REARM_RATIO", 0.9)
             ctrl["gas_ok_since"] = None
             ctrl["reset_gen"] += 1
             ctrl["vib_active"] = False       # vibration alarm off right now
